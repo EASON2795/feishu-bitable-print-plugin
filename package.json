@@ -1,8 +1,8 @@
 {
   "name": "feishu-bitable-print-plugin",
   "private": false,
-  "version": "0.1.0",
-  "description": "Privacy-first document layout and printing plugin for Feishu/Lark Base.",
+  "version": "0.3.0",
+  "description": "Privacy-first document layout and printing for Feishu/Lark Base and Chrome.",
   "type": "module",
   "license": "MIT",
   "author": "EASON2795 and contributors",
@@ -19,6 +19,7 @@
     "lark",
     "bitable",
     "base",
+    "chrome-extension",
     "print",
     "invoice"
   ],
@@ -30,6 +31,7 @@
     "dev": "vite",
     "dev:host": "vite --host",
     "build": "tsc -b && vite build",
+    "build:chrome": "tsc -b && vite build --mode chrome --outDir dist-chrome",
     "lint": "eslint .",
     "preview": "vite preview"
   },

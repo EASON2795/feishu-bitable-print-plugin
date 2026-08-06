@@ -39,7 +39,7 @@ export type DataSourceTableOption = {
 }
 
 export type DataSourceSchema = {
-  source: 'feishu' | 'mock'
+  source: 'feishu' | 'mock' | 'local'
   tables: DataSourceTableOption[]
 }
 
@@ -229,7 +229,7 @@ export type ValidationIssue = {
 }
 
 export type PiPrintContext = {
-  source: 'feishu' | 'mock'
+  source: 'feishu' | 'mock' | 'local'
   baseName: string
   mainTableId: string
   mainTableName: string

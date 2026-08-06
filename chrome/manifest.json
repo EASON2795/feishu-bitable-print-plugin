@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "单据排版打印台",
+  "short_name": "单据打印台",
+  "version": "0.3.0",
+  "description": "接收飞书多维表格插件选中的记录，或导入本地数据，排版并打印单据。",
+  "offline_enabled": true,
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "打开单据排版打印台",
+    "default_icon": {
+      "16": "icons/icon.png",
+      "32": "icons/icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://eason2795.github.io/feishu-bitable-print-plugin/*"],
+      "js": ["feishu-bridge.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon.png",
+    "32": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
+  }
+}

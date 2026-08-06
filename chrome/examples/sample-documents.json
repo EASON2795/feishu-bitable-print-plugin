@@ -1,0 +1,33 @@
+{
+  "documents": [
+    {
+      "invoiceNo": "PI-DEMO-001",
+      "invoiceDate": "2026/08/06",
+      "customerInvoiceTitle": "DEMO CUSTOMER LTD.",
+      "totalWithCurrency": "$1,250.00",
+      "sayAmount": "ONE THOUSAND TWO HUNDRED AND FIFTY US DOLLARS ONLY",
+      "paymentTerms": "30% T/T deposit, 70% before shipment",
+      "priceTerms": "FOB",
+      "items": [
+        {
+          "sortNo": "1",
+          "itemName": "SAMPLE PRODUCT A",
+          "specification": "AC 220V / 50Hz",
+          "quantity": "1",
+          "unit": "PCS",
+          "unitPrice": "$750.00",
+          "subtotal": "$750.00"
+        },
+        {
+          "sortNo": "2",
+          "itemName": "SAMPLE PRODUCT B",
+          "specification": "1650 × 800 mm",
+          "quantity": "1",
+          "unit": "PCS",
+          "unitPrice": "$500.00",
+          "subtotal": "$500.00"
+        }
+      ]
+    }
+  ]
+}

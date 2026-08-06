@@ -7,8 +7,10 @@ import {
   notifyHost,
   pickPiRecordIds,
   subscribeSelectionChange,
-} from './feishu'
+} from '@runtime-host'
 import { getMockPiSnapshot } from './mockData'
+import { importDataFile } from './dataImport'
+import { isFeishuBridgeAckMessage, publishFeishuSnapshot } from './bridgeProtocol'
 import { DOCUMENT_KIND_LABELS } from './piConfig'
 import { checkLocalPrint, getPrintRuntimeLabel, previewPrint, saveAsPdf } from './localPrint'
 import { buildPrintDocument } from './printDocument'
@@ -124,12 +126,15 @@ const FONT_OPTIONS = [
 ]
 
 function App() {
+  const isChromeExtension = isChromeExtensionRuntime()
+  const chromeBridgeLoadedRef = useRef(false)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [busyAction, setBusyAction] = useState<'preview' | 'download' | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
+  const [bridgeSyncAt, setBridgeSyncAt] = useState<string | null>(null)
   const [activePanel, setActivePanel] = useState<ActivePanel>('print')
   const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 860,
@@ -138,7 +143,10 @@ function App() {
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [templateSearch, setTemplateSearch] = useState('')
   const [diagnosticEvents, setDiagnosticEvents] = useState<DiagnosticEvent[]>(() => [
-    createDiagnosticEvent('info', '插件页面已开始加载。'),
+    createDiagnosticEvent(
+      'info',
+      isChromeExtension ? 'Chrome 打印台正在查找飞书同步数据。' : '插件页面已开始加载。',
+    ),
   ])
   const [templateWorkspace, setTemplateWorkspace] = useState<TemplateWorkspace>(() =>
     loadTemplateWorkspace(),
@@ -177,14 +185,23 @@ function App() {
   const loadCurrentSelection = useCallback(async () => {
     setIsLoading(true)
     setMessage(null)
-    addDiagnosticEvent('info', '开始读取飞书当前记录。')
+    addDiagnosticEvent(
+      'info',
+      isChromeExtension ? '开始接收飞书插件同步数据。' : '开始读取飞书当前记录。',
+    )
 
     try {
       const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate), 6000)
       setSnapshot(nextSnapshot)
+      if (isChromeExtension) {
+        const nextSchema = await withTimeout(loadDataSourceSchema(), 3000)
+        setDataSourceSchema(nextSchema)
+      }
       addDiagnosticEvent(
         'info',
-        `飞书数据读取完成：${nextSnapshot.payload.documents.length} 条单据。`,
+        isChromeExtension
+          ? `已接收飞书勾选数据：${nextSnapshot.payload.documents.length} 条单据。`
+          : `飞书数据读取完成：${nextSnapshot.payload.documents.length} 条单据。`,
         `来源：${nextSnapshot.context.source}；表：${nextSnapshot.context.mainTableName}；视图：${nextSnapshot.context.viewName}`,
       )
     } catch (hostError) {
@@ -201,13 +218,28 @@ function App() {
     } finally {
       setIsLoading(false)
     }
-  }, [activeTemplate, addDiagnosticEvent])
+  }, [activeTemplate, addDiagnosticEvent, isChromeExtension])
 
   useEffect(() => {
+    if (!isChromeExtension) {
+      void loadCurrentSelection()
+    }
+  }, [isChromeExtension, loadCurrentSelection])
+
+  useEffect(() => {
+    if (!isChromeExtension || chromeBridgeLoadedRef.current) {
+      return
+    }
+
+    chromeBridgeLoadedRef.current = true
     void loadCurrentSelection()
-  }, [loadCurrentSelection])
+  }, [isChromeExtension, loadCurrentSelection])
 
   useEffect(() => {
+    if (isChromeExtension) {
+      return
+    }
+
     let isMounted = true
 
     async function loadSchema() {
@@ -240,7 +272,7 @@ function App() {
     return () => {
       isMounted = false
     }
-  }, [addDiagnosticEvent])
+  }, [addDiagnosticEvent, isChromeExtension])
 
   useEffect(() => {
     let reloadTimer: number | undefined
@@ -255,7 +287,43 @@ function App() {
       window.clearTimeout(reloadTimer)
       unsubscribe()
     }
-  }, [loadCurrentSelection])
+  }, [isChromeExtension, loadCurrentSelection])
+
+  useEffect(() => {
+    if (isChromeExtension || snapshot?.context.source !== 'feishu') {
+      return
+    }
+
+    publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate.id)
+  }, [activeTemplate.id, dataSourceSchema, isChromeExtension, snapshot])
+
+  useEffect(() => {
+    if (isChromeExtension) {
+      return
+    }
+
+    const handleBridgeAck = (event: MessageEvent<unknown>) => {
+      if (
+        event.source !== window ||
+        event.origin !== window.location.origin ||
+        !isFeishuBridgeAckMessage(event.data)
+      ) {
+        return
+      }
+
+      setBridgeSyncAt(
+        new Date(event.data.receivedAt).toLocaleTimeString('zh-CN', {
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+      )
+    }
+
+    window.addEventListener('message', handleBridgeAck)
+    return () => window.removeEventListener('message', handleBridgeAck)
+  }, [isChromeExtension])
 
   useEffect(() => {
     let isMounted = true
@@ -328,7 +396,7 @@ function App() {
     blockers.length === 0 &&
     pdfStatus === 'online' &&
     !busyAction
-  const canPickRecords = Boolean(snapshot) && !isLoading && !wrongTableIssue
+  const canPickRecords = !isChromeExtension && Boolean(snapshot) && !isLoading && !wrongTableIssue
 
   async function handlePreviewPdf() {
     if (!printPayload) {
@@ -476,6 +544,40 @@ function App() {
     }
   }
 
+  async function handleImportDataFile(file: File) {
+    setIsLoading(true)
+    setMessage(null)
+
+    try {
+      const result = await importDataFile(file)
+      setSnapshot(result.snapshot)
+      setDataSourceSchema(result.schema)
+      setActivePanel('print')
+      const itemCount = result.snapshot.payload.documents.reduce(
+        (total, document) => total + document.items.length,
+        0,
+      )
+      const successMessage = `已导入 ${result.snapshot.payload.documents.length} 条单据、${itemCount} 行明细；数据只保留在当前页面。`
+      setMessage(successMessage)
+      addDiagnosticEvent('info', successMessage, `文件：${file.name}`)
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : '单据数据解析失败。'
+      setMessage(`导入失败：${nextMessage}`)
+      addDiagnosticEvent('error', '单据数据导入失败。', formatUnknownError(error))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  function handleLoadDemoData() {
+    const demoSnapshot = getMockPiSnapshot()
+    setSnapshot(demoSnapshot)
+    setDataSourceSchema(getMockDataSourceSchema())
+    setActivePanel('print')
+    setMessage('已恢复虚构示例数据。')
+    addDiagnosticEvent('info', '已恢复虚构示例数据。')
+  }
+
   if (isDesignerMode && editingTemplate) {
     return (
       <TemplateDesigner
@@ -506,6 +608,21 @@ function App() {
       ) : null}
 
       <main className="preview-shell">
+        {isChromeExtension ? (
+          <input
+            accept=".csv,.tsv,.json,text/csv,application/json"
+            className="visually-hidden"
+            id="local-data-upload"
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) {
+                void handleImportDataFile(file)
+              }
+              event.currentTarget.value = ''
+            }}
+          />
+        ) : null}
         {isControlPanelCollapsed ? (
           <button
             className="preview-sidebar-reveal"
@@ -542,18 +659,49 @@ function App() {
                 修改
               </button>
             </div>
-            <button
-              className="batch-link"
-              onClick={() => void handlePickRecords()}
-              disabled={!canPickRecords}
-              title={wrongTableIssue?.message}
-              type="button"
-            >
-              {wrongTableIssue ? `先切到 ${activeTemplate.mainTableName}` : '进入批量模式'}
-            </button>
+            {isChromeExtension ? (
+              <div className="preview-data-links">
+                <button
+                  className="batch-link"
+                  disabled={isLoading}
+                  onClick={() => void loadCurrentSelection()}
+                  type="button"
+                >
+                  读取飞书勾选数据
+                </button>
+                <label className="batch-link batch-link-label" htmlFor="local-data-upload">
+                  导入 CSV / JSON
+                </label>
+              </div>
+            ) : (
+              <button
+                className="batch-link"
+                onClick={() => void handlePickRecords()}
+                disabled={!canPickRecords}
+                title={wrongTableIssue?.message}
+                type="button"
+              >
+                {wrongTableIssue ? `先切到 ${activeTemplate.mainTableName}` : '进入批量模式'}
+              </button>
+            )}
           </div>
 
           <div className="preview-toolbar-actions">
+            {isChromeExtension ? (
+              <>
+                <button
+                  className="toolbar-button"
+                  disabled={isLoading}
+                  onClick={() => void loadCurrentSelection()}
+                  type="button"
+                >
+                  {isLoading ? '读取中' : '同步飞书'}
+                </button>
+                <label className="toolbar-button toolbar-button-import" htmlFor="local-data-upload">
+                  导入数据
+                </label>
+              </>
+            ) : null}
             <div className="more-menu-wrap">
               <button
                 className="toolbar-button"
@@ -564,18 +712,34 @@ function App() {
               </button>
               {isMoreMenuOpen ? (
                 <div className="more-menu" role="menu">
-                  <button onClick={() => void handlePickRecords()} disabled={!canPickRecords} type="button">
-                    批量导出记录
-                  </button>
+                  {isChromeExtension ? (
+                    <>
+                      <button onClick={() => void loadCurrentSelection()} disabled={isLoading} type="button">
+                        读取飞书勾选数据
+                      </button>
+                      <label htmlFor="local-data-upload" onClick={() => setIsMoreMenuOpen(false)}>
+                        导入 CSV / JSON
+                      </label>
+                      <button onClick={handleLoadDemoData} type="button">
+                        载入虚构示例
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => void handlePickRecords()} disabled={!canPickRecords} type="button">
+                      批量导出记录
+                    </button>
+                  )}
                   <button onClick={() => handleEditTemplate(activeTemplate)} type="button">
                     排版设置
                   </button>
                   <button onClick={() => handleCopyTemplate(activeTemplate)} type="button">
                     复制排版
                   </button>
-                  <button onClick={() => void loadCurrentSelection()} type="button">
-                    刷新数据
-                  </button>
+                  {!isChromeExtension ? (
+                    <button onClick={() => void loadCurrentSelection()} type="button">
+                      刷新数据
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => {
                       setShowDiagnostics((current) => !current)
@@ -629,9 +793,10 @@ function App() {
         </header>
 
         <section className="workbench-status">
-          <span>{snapshot?.context.source === 'mock' ? '本地样例' : '飞书数据'}</span>
+          <span>{getDataSourceLabel(snapshot?.context.source)}</span>
           <span>{pdfStatusLabel(pdfStatus)}</span>
           <span>{DOCUMENT_KIND_LABELS[activeTemplate.documentKind]}</span>
+          {bridgeSyncAt ? <span>Chrome 已同步 {bridgeSyncAt}</span> : null}
           <strong>{currentInvoiceNo}</strong>
           <span>{snapshot?.payload.documents.length ?? 0} 条单据</span>
           <span>{currentItemCount} 行明细</span>
@@ -2828,6 +2993,29 @@ function collectRuntimeInfo(): RuntimeInfo {
     secureContext: window.isSecureContext,
     inIframe: window.self !== window.top,
   }
+}
+
+function isChromeExtensionRuntime(): boolean {
+  return (
+    import.meta.env.MODE === 'chrome' ||
+    (typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:')
+  )
+}
+
+function getDataSourceLabel(source?: PiSnapshot['context']['source']): string {
+  if (source === 'feishu') {
+    return '飞书数据'
+  }
+
+  if (source === 'local') {
+    return '本地导入'
+  }
+
+  if (source === 'mock') {
+    return '本地样例'
+  }
+
+  return '尚未读取'
 }
 
 function shouldUseDemoData(): boolean {

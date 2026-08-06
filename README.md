@@ -1,12 +1,13 @@
 # 单据排版打印台
 
-面向飞书/Lark 多维表格的开源单据排版与打印插件。它在浏览器内读取当前用户有权访问的记录，生成 A4 单据预览，并调用系统打印窗口完成打印或“另存为 PDF”。
+开源的单据排版与打印工具，同时提供飞书/Lark 多维表格版和 Chrome 本地版。它在浏览器内生成 A4 单据预览，并调用系统打印窗口完成打印或“另存为 PDF”。
 
 > 隐私优先：社区版没有接收单据内容的后端服务。客户、金额、银行和产品明细不会发送给本项目维护者。
 
 ## 功能
 
 - 读取多维表格当前记录或批量选择的记录
+- Chrome 版可接收飞书插件读取的勾选记录，也支持导入本地 CSV、TSV 和 JSON
 - 展开主记录关联的明细记录
 - 内置形式发票、商业发票和装箱单入口
 - 支持公司信息、标题、表头、条款、列宽、字号和页边距调整
@@ -14,6 +15,24 @@
 - 自定义模板保存在当前浏览器
 - 使用浏览器本地打印；可在系统打印窗口中选择“另存为 PDF”
 - 开发模式提供完全虚构的演示数据
+
+## Chrome 版
+
+Chrome 版不需要业务服务器，也不读取飞书登录 Cookie。完整同步模式由飞书插件使用官方 Base SDK 读取当前勾选记录及关联明细，再通过精确匹配的公开插件页面交给 Chrome 打印台；GitHub Pages 只提供静态页面，不接收或保存单据正文。
+
+如果不使用飞书同步，也可以继续导入 CSV、TSV 或 JSON。安装后点击扩展图标，会打开完整的排版工作台。
+
+### 安装试用版
+
+1. 运行 `npm run build:chrome`，生成 `dist-chrome/`。
+2. 在 Chrome 地址栏打开 `chrome://extensions/`。
+3. 打开右上角“开发者模式”。
+4. 点击“加载已解压的扩展程序”，选择项目里的 `dist-chrome/` 文件夹。
+5. 将“单据排版打印台”固定到工具栏，点击图标即可使用。
+
+要读取飞书勾选数据，还需按“在飞书多维表格中使用”一节添加同名飞书插件，并保持插件面板打开。飞书插件读取成功后，Chrome 工作台会显示“飞书数据”。
+
+详细说明与数据格式见 [Chrome 扩展使用说明](docs/CHROME_EXTENSION.md)。
 
 ## 在线地址
 
@@ -59,6 +78,7 @@ npm run dev:host
 ```bash
 npm run lint
 npm run build
+npm run build:chrome
 ```
 
 ## 部署
@@ -90,6 +110,7 @@ docker compose up -d --build
 
 - React + TypeScript + Vite
 - 飞书 Base JS SDK
+- Chrome Manifest V3；扩展构建不包含飞书 SDK
 - 浏览器原生打印与“另存为 PDF”
 - localStorage 保存自定义模板
 - GitHub Actions 自动验证与部署
@@ -97,6 +118,9 @@ docker compose up -d --build
 关键文件：
 
 - `src/feishu.ts`：读取当前 Base、记录和字段结构
+- `src/dataImport.ts`：Chrome 本地版 CSV/JSON 数据导入
+- `src/chromeHost.ts`：Chrome 运行环境与飞书同步数据适配
+- `src/bridgeProtocol.ts`：飞书插件到 Chrome 的本地桥接协议
 - `src/piConfig.ts`：内置模板与字段映射
 - `src/printDocument.ts`：生成可打印 HTML
 - `src/localPrint.ts`：打开本地打印窗口
