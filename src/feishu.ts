@@ -54,6 +54,131 @@ const EMPTY_MAIN_FIELDS: PiPrintFields = {
   bankInformation: '',
 }
 
+const OFFICIAL_MAIN_FIELD_ALIASES: Record<PiMainFieldKey, readonly string[]> = {
+  customerInvoiceTitle: [
+    'customerInvoiceTitle',
+    'customer',
+    'buyer',
+    '客户发票抬头',
+    '客户抬头',
+    '客户',
+    '买方',
+  ],
+  invoiceNo: [
+    'invoiceNo',
+    'invoiceNumber',
+    'orderNo',
+    'piNo',
+    'contractNo',
+    '单据号',
+    '发票号',
+    '订单号',
+    'PI号',
+    '合同编号',
+  ],
+  invoiceDate: [
+    'invoiceDate',
+    'date',
+    '单据日期',
+    '发票日期',
+    '签订时间',
+    '发票箱单日期',
+    '文本 4',
+    '日期',
+  ],
+  totalWithCurrency: [
+    'totalWithCurrency',
+    'total',
+    'amount',
+    '总计代币种',
+    '发票金额带币种',
+    '总值',
+    '总计',
+    '总金额',
+    '金额',
+    '件数英文',
+  ],
+  sayAmount: [
+    'sayAmount',
+    'amountInWords',
+    'SAY',
+    '金额大写',
+    '发票金额大写',
+    '净重计算',
+  ],
+  paymentTerms: [
+    'paymentTerms',
+    'paymentTerm',
+    'Payment Terms',
+    'Payment Term',
+    '付款条款',
+    '支付条款',
+    '毛重计算',
+  ],
+  priceTerms: [
+    'priceTerms',
+    'priceTerm',
+    'tradeTerms',
+    'Price Terms',
+    'Price Term',
+    '价格条款',
+    '贸易条款',
+    '体积计算',
+  ],
+  productionTime: [
+    'productionTime',
+    'leadTime',
+    'Production Time',
+    '生产时间',
+    '交期',
+    '件数计算',
+  ],
+  portOfDeparture: [
+    'portOfDeparture',
+    'departurePort',
+    'Port of departure',
+    'Port of Departure',
+    '起运港',
+  ],
+  portOfDestination: [
+    'portOfDestination',
+    'destinationPort',
+    'Port of destination',
+    'Port of Destination',
+    '目的港',
+  ],
+  bankInformation: ['bankInformation', 'bankInfo', '银行信息'],
+}
+
+const OFFICIAL_ITEM_FIELD_ALIASES: Record<PiItemFieldKey, readonly string[]> = {
+  sortNo: ['sortNo', 'lineNo', 'sequenceNo', '序号', '行号'],
+  itemName: [
+    'itemName',
+    'productName',
+    'description',
+    'ITEM NAME',
+    '品名',
+    '产品名称',
+    '货物名称',
+  ],
+  specification: ['specification', 'spec', 'SPECIFICATION', '规格', '产品规格'],
+  quantity: ['quantity', 'qty', 'QUANTITY', '数量', '实际生产数量'],
+  unit: ['unit', 'UNIT', '单位', '件数'],
+  unitPrice: ['unitPrice', 'price', 'UNIT PRICE', '单价', '净重'],
+  subtotal: [
+    'subtotal',
+    'lineTotal',
+    'SUB TOTAL',
+    'SUBTOTAL形式发票',
+    '小计',
+    '金额小计',
+    '实际发票',
+    '毛重',
+  ],
+}
+
+const SELECTION_POLL_INTERVAL_MS = 1000
+
 export async function loadPiSnapshot(
   template: PrintTemplate = TEMPLATE_REGISTRY[0],
   recordIds?: string[],
@@ -148,6 +273,10 @@ export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
   }
 }
 
+export async function loadSyncedTemplate(): Promise<PrintTemplate | null> {
+  return null
+}
+
 export function getMockDataSourceSchema(): DataSourceSchema {
   return {
     source: 'mock',
@@ -174,13 +303,69 @@ export function getMockDataSourceSchema(): DataSourceSchema {
 }
 
 export function subscribeSelectionChange(onChange: () => void): () => void {
+  let isDisposed = false
+  let isPolling = false
+  let lastCheckedRecordFingerprint: string | null = null
+  let unsubscribeHost = () => {}
+
   try {
-    return bitable.base.onSelectionChange(() => {
+    unsubscribeHost = bitable.base.onSelectionChange(() => {
+      // The host event already schedules a refresh. Let the next poll establish a new
+      // baseline so that the same interaction does not trigger a second refresh.
+      lastCheckedRecordFingerprint = null
       onChange()
     })
   } catch {
     return () => {}
   }
+
+  const pollCheckedRecords = async () => {
+    if (isDisposed || isPolling) {
+      return
+    }
+
+    isPolling = true
+    try {
+      const fingerprint = await getCheckedRecordFingerprint()
+      if (lastCheckedRecordFingerprint === null) {
+        lastCheckedRecordFingerprint = fingerprint
+      } else if (fingerprint !== lastCheckedRecordFingerprint) {
+        lastCheckedRecordFingerprint = fingerprint
+        onChange()
+      }
+    } catch {
+      // The Base can be switching tables or views while a poll is in flight.
+    } finally {
+      isPolling = false
+    }
+  }
+
+  void pollCheckedRecords()
+  const pollTimer = window.setInterval(() => {
+    void pollCheckedRecords()
+  }, SELECTION_POLL_INTERVAL_MS)
+
+  return () => {
+    isDisposed = true
+    window.clearInterval(pollTimer)
+    unsubscribeHost()
+  }
+}
+
+async function getCheckedRecordFingerprint(): Promise<string> {
+  const table = await bitable.base.getActiveTable()
+  const view = await resolveActiveView(table)
+  const [tableMeta, viewMeta] = await Promise.all([table.getMeta(), view.getMeta()])
+  let recordIds: string[]
+
+  if (viewCheckers.isGridView(view)) {
+    recordIds = await view.getSelectedRecordIdList()
+  } else {
+    const selection = await bitable.base.getSelection()
+    recordIds = selection.recordId ? [selection.recordId] : []
+  }
+
+  return `${tableMeta.id}:${viewMeta.id}:${[...recordIds].sort().join(',')}`
 }
 
 async function resolveTableContext(template: PrintTemplate): Promise<TableContext> {
@@ -329,27 +514,123 @@ async function loadOfficialDocuments(
           [dynamicRoot]: itemRows,
         },
       }
-      const title = officialFields['订单号']?.text || officialFields['合同编号']?.text || recordId
+      const fields = buildCanonicalMainFields(officialFields, template.mainFields)
+      const items = sortItems(
+        buildCanonicalItems(itemRows, linkedRecordIds, recordId, template.itemFields),
+      )
+      const title = fields.invoiceNo || recordId
+      fields.invoiceNo ||= title
 
       addOfficialDocumentIssues(recordId, template, official, issues)
 
       return {
         recordId,
         title,
-        fields: {
-          ...EMPTY_MAIN_FIELDS,
-          invoiceNo: officialFields['订单号']?.text || title,
-          invoiceDate: officialFields['签订时间']?.text || '',
-          totalWithCurrency: officialFields['总值']?.text || '',
-          sayAmount: officialFields['金额大写']?.text || '',
-        },
-        items: [],
+        fields,
+        items,
         official,
       }
     }),
   )
 
   return documents
+}
+
+function buildCanonicalMainFields(
+  officialFields: Record<string, OfficialPrintValue>,
+  mappings: PrintTemplate['mainFields'],
+): PiPrintFields {
+  const fields: PiPrintFields = { ...EMPTY_MAIN_FIELDS }
+
+  ;(Object.keys(OFFICIAL_MAIN_FIELD_ALIASES) as PiMainFieldKey[]).forEach((key) => {
+    fields[key] = readOfficialAliasText(
+      officialFields,
+      expandOfficialAliases(OFFICIAL_MAIN_FIELD_ALIASES[key], mappings),
+    )
+  })
+
+  return fields
+}
+
+function buildCanonicalItems(
+  itemRows: Record<string, OfficialPrintValue>[],
+  linkedRecordIds: string[],
+  documentRecordId: string,
+  mappings: PrintTemplate['itemFields'],
+): PiPrintItem[] {
+  return itemRows.map((row, index) => {
+    const item = {
+      recordId: linkedRecordIds[index] || `${documentRecordId}-item-${index + 1}`,
+      sortNo: '',
+      itemName: '',
+      specification: '',
+      quantity: '',
+      unit: '',
+      unitPrice: '',
+      subtotal: '',
+    } satisfies PiPrintItem
+
+    ;(Object.keys(OFFICIAL_ITEM_FIELD_ALIASES) as PiItemFieldKey[]).forEach((key) => {
+      item[key] = readOfficialAliasText(
+        row,
+        expandOfficialAliases(OFFICIAL_ITEM_FIELD_ALIASES[key], mappings),
+      )
+    })
+
+    return item
+  })
+}
+
+function expandOfficialAliases(
+  aliases: readonly string[],
+  mappings: PrintTemplate['mainFields'],
+): string[] {
+  const expanded = new Set(aliases)
+  const normalizedAliases = new Set(aliases.map(normalizeOfficialAlias))
+
+  mappings.forEach((mapping) => {
+    const mappingAliases = [mapping.key, getOfficialLeafFieldName(mapping.key), mapping.label]
+    if (mappingAliases.some((alias) => normalizedAliases.has(normalizeOfficialAlias(alias)))) {
+      mappingAliases.forEach((alias) => expanded.add(alias))
+    }
+  })
+
+  return Array.from(expanded)
+}
+
+function readOfficialAliasText(
+  values: Record<string, OfficialPrintValue>,
+  aliases: readonly string[],
+): string {
+  for (const alias of aliases) {
+    const text = values[alias]?.text.trim()
+    if (text) {
+      return text
+    }
+  }
+
+  const normalizedValues = new Map<string, string>()
+  Object.entries(values).forEach(([key, value]) => {
+    const text = value.text.trim()
+    if (text && !normalizedValues.has(normalizeOfficialAlias(key))) {
+      normalizedValues.set(normalizeOfficialAlias(key), text)
+    }
+  })
+
+  for (const alias of aliases) {
+    const text = normalizedValues.get(normalizeOfficialAlias(alias))
+    if (text) {
+      return text
+    }
+  }
+
+  return ''
+}
+
+function normalizeOfficialAlias(value: string): string {
+  return getOfficialLeafFieldName(normalizeOfficialFieldPath(value))
+    .toLocaleLowerCase()
+    .replace(/[\s_.\-:：/\\()[\]{}]+/g, '')
 }
 
 function buildMainFieldLabels(template: PrintTemplate): Record<PiMainFieldKey, string> {

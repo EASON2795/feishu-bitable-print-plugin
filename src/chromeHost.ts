@@ -17,6 +17,7 @@ type ChromeBridgeResponse = {
     snapshot?: PiSnapshot
     schema?: DataSourceSchema | null
     activeTemplateId?: string
+    activeTemplate?: PrintTemplate | null
     emittedAt?: number
     receivedAt?: number
   }
@@ -25,6 +26,8 @@ type ChromeBridgeResponse = {
 type LatestBridgeData = NonNullable<ChromeBridgeResponse['data']> & {
   snapshot: PiSnapshot
 }
+
+let latestBridgeData: LatestBridgeData | null = null
 
 type ChromeRuntimeApi = {
   sendMessage(message: unknown): Promise<ChromeBridgeResponse>
@@ -55,10 +58,11 @@ async function getLatestBridgeData(): Promise<LatestBridgeData> {
     )
   }
 
-  return {
+  latestBridgeData = {
     ...response.data,
     snapshot: response.data.snapshot,
   }
+  return latestBridgeData
 }
 
 export async function loadPiSnapshot(
@@ -81,8 +85,13 @@ export async function notifyHost(_message: string): Promise<void> {
 }
 
 export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
-  const data = await getLatestBridgeData()
+  const data = latestBridgeData ?? (await getLatestBridgeData())
   return data.schema ?? getMockDataSourceSchema()
+}
+
+export async function loadSyncedTemplate(): Promise<PrintTemplate | null> {
+  const data = latestBridgeData ?? (await getLatestBridgeData())
+  return data.activeTemplate ?? null
 }
 
 export function getMockDataSourceSchema(): DataSourceSchema {

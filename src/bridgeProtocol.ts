@@ -1,4 +1,4 @@
-import type { DataSourceSchema, PiSnapshot } from './types'
+import type { DataSourceSchema, PiSnapshot, PrintTemplate } from './types'
 
 export const FEISHU_BRIDGE_CHANNEL = 'feishu-bitable-print-plugin'
 export const FEISHU_BRIDGE_VERSION = 1
@@ -14,6 +14,7 @@ export type FeishuSnapshotBridgeMessage = {
     snapshot: PiSnapshot
     schema: DataSourceSchema | null
     activeTemplateId: string
+    activeTemplate: PrintTemplate
   }
 }
 
@@ -28,7 +29,7 @@ type FeishuBridgeAckMessage = {
 export function publishFeishuSnapshot(
   snapshot: PiSnapshot,
   schema: DataSourceSchema | null,
-  activeTemplateId: string,
+  activeTemplate: PrintTemplate,
 ): number {
   const emittedAt = Date.now()
   const message: FeishuSnapshotBridgeMessage = {
@@ -39,7 +40,8 @@ export function publishFeishuSnapshot(
     payload: {
       snapshot,
       schema,
-      activeTemplateId,
+      activeTemplateId: activeTemplate.id,
+      activeTemplate,
     },
   }
 

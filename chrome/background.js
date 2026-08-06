@@ -41,6 +41,7 @@ async function storeBridgeSnapshot(data, sender) {
     snapshot: data.payload.snapshot,
     schema: data.payload.schema ?? null,
     activeTemplateId: data.payload.activeTemplateId || '',
+    activeTemplate: data.payload.activeTemplate ?? null,
     emittedAt: data.emittedAt,
     receivedAt: Date.now(),
   }

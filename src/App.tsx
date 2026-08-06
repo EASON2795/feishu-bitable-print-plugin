@@ -4,6 +4,7 @@ import {
   getMockDataSourceSchema,
   loadDataSourceSchema,
   loadPiSnapshot,
+  loadSyncedTemplate,
   notifyHost,
   pickPiRecordIds,
   subscribeSelectionChange,
@@ -117,6 +118,8 @@ const ITEM_COLUMN_LABELS: Record<ItemColumnKey, string> = {
 }
 
 const MAX_DIAGNOSTIC_EVENTS = 8
+const CHROME_SCHEMA_TIMEOUT_MS = 3000
+const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
 const FONT_OPTIONS = [
   { label: '默认字体', value: '' },
   { label: 'Arial', value: 'Arial, sans-serif' },
@@ -151,18 +154,20 @@ function App() {
   const [templateWorkspace, setTemplateWorkspace] = useState<TemplateWorkspace>(() =>
     loadTemplateWorkspace(),
   )
+  const [bridgedTemplate, setBridgedTemplate] = useState<PrintTemplate | null>(null)
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
 
   const templates = useMemo(
     () => mergeTemplates(templateWorkspace.customTemplates),
     [templateWorkspace.customTemplates],
   )
-  const activeTemplate = useMemo(
+  const localActiveTemplate = useMemo(
     () =>
       templates.find((template) => template.id === templateWorkspace.activeTemplateId) ??
       templates[0],
     [templates, templateWorkspace.activeTemplateId],
   )
+  const activeTemplate = bridgedTemplate ?? localActiveTemplate
   const previewTemplate =
     activePanel === 'templates' && editingTemplate ? editingTemplate : activeTemplate
   const runtimeInfo = useMemo(() => collectRuntimeInfo(), [])
@@ -194,8 +199,12 @@ function App() {
       const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate), 6000)
       setSnapshot(nextSnapshot)
       if (isChromeExtension) {
-        const nextSchema = await withTimeout(loadDataSourceSchema(), 3000)
+        const [nextSchema, nextTemplate] = await Promise.all([
+          withTimeout(loadDataSourceSchema(), CHROME_SCHEMA_TIMEOUT_MS),
+          withTimeout(loadSyncedTemplate(), CHROME_SCHEMA_TIMEOUT_MS),
+        ])
         setDataSourceSchema(nextSchema)
+        setBridgedTemplate(nextTemplate)
       }
       addDiagnosticEvent(
         'info',
@@ -244,7 +253,7 @@ function App() {
 
     async function loadSchema() {
       try {
-        const schema = await withTimeout(loadDataSourceSchema(), 3000)
+        const schema = await withTimeout(loadDataSourceSchema(), FEISHU_SCHEMA_TIMEOUT_MS)
         if (isMounted) {
           setDataSourceSchema(schema)
           addDiagnosticEvent(
@@ -294,8 +303,8 @@ function App() {
       return
     }
 
-    publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate.id)
-  }, [activeTemplate.id, dataSourceSchema, isChromeExtension, snapshot])
+    publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
+  }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
 
   useEffect(() => {
     if (isChromeExtension) {
@@ -465,6 +474,7 @@ function App() {
   }
 
   function handleUseTemplate(templateId: string) {
+    setBridgedTemplate(null)
     commitTemplateWorkspace({
       ...templateWorkspace,
       activeTemplateId: templateId,
