@@ -1,0 +1,9 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: community/feishu-bitable-print-plugin:local
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-18087}:80"

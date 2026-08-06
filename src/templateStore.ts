@@ -1,0 +1,190 @@
+import { LINKED_ITEMS_FIELD_NAME, TEMPLATE_REGISTRY } from './piConfig'
+import { clonePrintSettings } from './templateDefaults'
+import {
+  COMMERCIAL_INVOICE_TEMPLATE_ID,
+  OFFICIAL_LAYOUT_TEMPLATE_ID,
+  PACKING_LIST_TEMPLATE_ID,
+  PROFORMA_INVOICE_TEMPLATE_ID,
+  type DocumentKind,
+  type PrintTemplate,
+} from './types'
+
+const STORAGE_KEY = 'feishu-bitable-print-template-workspace-v1'
+
+export type TemplateWorkspace = {
+  activeTemplateId: string
+  customTemplates: PrintTemplate[]
+}
+
+type StoredWorkspace = Partial<TemplateWorkspace>
+
+export function loadTemplateWorkspace(): TemplateWorkspace {
+  const fallback = createFallbackWorkspace()
+
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    if (!stored) {
+      return fallback
+    }
+
+    const parsed = JSON.parse(stored) as StoredWorkspace
+    const customTemplates = Array.isArray(parsed.customTemplates)
+      ? parsed.customTemplates.filter(isCustomTemplate).map(hydrateTemplate)
+      : []
+    const activeTemplateId =
+      typeof parsed.activeTemplateId === 'string' && findTemplate(parsed.activeTemplateId, customTemplates)
+        ? parsed.activeTemplateId
+        : fallback.activeTemplateId
+
+    return {
+      activeTemplateId,
+      customTemplates,
+    }
+  } catch {
+    return fallback
+  }
+}
+
+export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
+  window.localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      activeTemplateId: workspace.activeTemplateId,
+      customTemplates: workspace.customTemplates,
+    }),
+  )
+}
+
+export function mergeTemplates(customTemplates: PrintTemplate[]): PrintTemplate[] {
+  return [...TEMPLATE_REGISTRY, ...customTemplates]
+}
+
+export function createBlankTemplate(): PrintTemplate {
+  const now = new Date().toISOString()
+
+  return {
+    id: makeTemplateId('custom-template'),
+    name: '新单据模板',
+    documentKind: 'commercial-invoice',
+    description: '',
+    status: 'draft',
+    isBuiltIn: false,
+    mainTableName: '',
+    itemTableName: '',
+    linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
+    mainFields: [],
+    itemFields: [],
+    printSettings: clonePrintSettings(),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+export function copyTemplate(template: PrintTemplate): PrintTemplate {
+  const now = new Date().toISOString()
+
+  return {
+    ...template,
+    id: makeTemplateId(template.documentKind),
+    name: `${template.name} 副本`,
+    isBuiltIn: false,
+    officialTemplate: cloneOfficialTemplate(template.officialTemplate),
+    designOverrides: cloneDesignOverrides(template.designOverrides),
+    printSettings: clonePrintSettings(template.printSettings),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate {
+  const now = new Date().toISOString()
+  const name = template.name.trim() || '未命名单据模板'
+  const documentKind: DocumentKind = template.documentKind
+  const canUseOfficialRenderer =
+    template.rendererTemplateId === OFFICIAL_LAYOUT_TEMPLATE_ID &&
+    Boolean(template.officialTemplate) &&
+    Boolean(template.mainTableName.trim()) &&
+    Boolean(template.itemTableName.trim()) &&
+    Boolean(template.linkedItemsFieldName.trim())
+  const canUseExistingRenderer =
+    (template.rendererTemplateId === PROFORMA_INVOICE_TEMPLATE_ID && documentKind === 'proforma-invoice') ||
+    (template.rendererTemplateId === COMMERCIAL_INVOICE_TEMPLATE_ID && documentKind === 'commercial-invoice') ||
+    (template.rendererTemplateId === PACKING_LIST_TEMPLATE_ID && documentKind === 'packing-list')
+  const canRender = canUseOfficialRenderer || canUseExistingRenderer
+
+  return {
+    ...template,
+    name,
+    documentKind,
+    description: template.description.trim(),
+    isBuiltIn: false,
+    rendererTemplateId: canRender ? template.rendererTemplateId : undefined,
+    status: canRender ? 'ready' : 'draft',
+    mainTableName: template.mainTableName.trim(),
+    itemTableName: template.itemTableName.trim(),
+    linkedItemsFieldName: template.linkedItemsFieldName.trim() || LINKED_ITEMS_FIELD_NAME,
+    officialTemplate: cloneOfficialTemplate(template.officialTemplate),
+    designOverrides: cloneDesignOverrides(template.designOverrides),
+    printSettings: clonePrintSettings(template.printSettings),
+    updatedAt: now,
+  }
+}
+
+function hydrateTemplate(template: PrintTemplate): PrintTemplate {
+  return {
+    ...template,
+    officialTemplate: cloneOfficialTemplate(template.officialTemplate),
+    designOverrides: cloneDesignOverrides(template.designOverrides),
+    printSettings: clonePrintSettings(template.printSettings),
+  }
+}
+
+function createFallbackWorkspace(): TemplateWorkspace {
+  return {
+    activeTemplateId: TEMPLATE_REGISTRY[0].id,
+    customTemplates: [],
+  }
+}
+
+function findTemplate(templateId: string, customTemplates: PrintTemplate[]): PrintTemplate | undefined {
+  return mergeTemplates(customTemplates).find((template) => template.id === templateId)
+}
+
+function isCustomTemplate(value: unknown): value is PrintTemplate {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const template = value as PrintTemplate
+  return (
+    typeof template.id === 'string' &&
+    typeof template.name === 'string' &&
+    typeof template.documentKind === 'string' &&
+    template.isBuiltIn === false
+  )
+}
+
+function makeTemplateId(prefix: string): string {
+  const random =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+  return `${prefix}-${random}`
+}
+
+function cloneOfficialTemplate(template: PrintTemplate['officialTemplate']) {
+  if (!template) {
+    return undefined
+  }
+
+  return structuredClone(template)
+}
+
+function cloneDesignOverrides(overrides: PrintTemplate['designOverrides']) {
+  if (!overrides) {
+    return undefined
+  }
+
+  return structuredClone(overrides)
+}

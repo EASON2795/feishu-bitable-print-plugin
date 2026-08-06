@@ -1,0 +1,55 @@
+{
+  "name": "feishu-bitable-print-plugin",
+  "private": false,
+  "version": "0.1.0",
+  "description": "Privacy-first document layout and printing plugin for Feishu/Lark Base.",
+  "type": "module",
+  "license": "MIT",
+  "author": "EASON2795 and contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EASON2795/feishu-bitable-print-plugin.git"
+  },
+  "homepage": "https://eason2795.github.io/feishu-bitable-print-plugin/",
+  "bugs": {
+    "url": "https://github.com/EASON2795/feishu-bitable-print-plugin/issues"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "bitable",
+    "base",
+    "print",
+    "invoice"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "output": "dist",
+  "scripts": {
+    "dev": "vite",
+    "dev:host": "vite --host",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@lark-base-open/js-sdk": "^1.0.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^24.12.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.57.0",
+    "vite": "^8.0.1"
+  }
+}

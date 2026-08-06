@@ -1,0 +1,12 @@
+.git
+.tools
+dist
+node_modules
+npm-debug.log*
+*.tar.gz
+feishu-print*.tar.gz
+Dockerfile*
+docker-compose*.yml
+README.md
+*.local
+.DS_Store
