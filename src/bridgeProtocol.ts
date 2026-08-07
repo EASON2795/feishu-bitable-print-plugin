@@ -11,6 +11,7 @@ export type FeishuSnapshotBridgeMessage = {
   version: typeof FEISHU_BRIDGE_VERSION
   type: typeof FEISHU_SNAPSHOT_MESSAGE
   emittedAt: number
+  requestId?: string
   payload: {
     snapshot: PiSnapshot
     schema: DataSourceSchema | null
@@ -39,6 +40,7 @@ export function publishFeishuSnapshot(
   snapshot: PiSnapshot,
   schema: DataSourceSchema | null,
   activeTemplate: PrintTemplate,
+  requestId?: string,
 ): number {
   const emittedAt = Date.now()
   const message: FeishuSnapshotBridgeMessage = {
@@ -46,6 +48,7 @@ export function publishFeishuSnapshot(
     version: FEISHU_BRIDGE_VERSION,
     type: FEISHU_SNAPSHOT_MESSAGE,
     emittedAt,
+    ...(requestId ? { requestId } : {}),
     payload: {
       snapshot,
       schema,

@@ -340,7 +340,7 @@ function App() {
         return
       }
 
-      publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
+      publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate, event.data.requestId)
     }
 
     window.addEventListener('message', handleSnapshotRequest)

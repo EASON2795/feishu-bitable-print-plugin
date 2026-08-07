@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "单据排版打印台",
   "short_name": "单据打印台",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "minimum_chrome_version": "114",
   "description": "接收飞书多维表格插件选中的记录，或导入本地数据，排版并打印单据。",
   "offline_enabled": true,
