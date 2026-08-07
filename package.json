@@ -1,8 +1,8 @@
 {
   "name": "feishu-bitable-print-plugin",
   "private": false,
-  "version": "0.4.3",
-  "description": "Privacy-first document layout and printing for Feishu/Lark Base and Chrome.",
+  "version": "0.5.0",
+  "description": "Privacy-first document layout and local printing for Feishu/Lark Base.",
   "type": "module",
   "license": "MIT",
   "author": "EASON2795 and contributors",
@@ -19,8 +19,8 @@
     "lark",
     "bitable",
     "base",
-    "chrome-extension",
     "print",
+    "print-workspace",
     "invoice"
   ],
   "engines": {

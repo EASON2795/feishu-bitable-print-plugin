@@ -11,13 +11,12 @@ import {
 } from '@runtime-host'
 import { getMockPiSnapshot } from './mockData'
 import { importDataFile } from './dataImport'
-import {
-  isFeishuBridgeAckMessage,
-  isFeishuSnapshotRequestMessage,
-  publishFeishuSnapshot,
-} from './bridgeProtocol'
 import { DOCUMENT_KIND_LABELS } from './piConfig'
-import { checkLocalPrint, getPrintRuntimeLabel, previewPrint, saveAsPdf } from './localPrint'
+import {
+  checkLocalPrint,
+  getPrintRuntimeLabel,
+  openPrintWorkspace,
+} from './localPrint'
 import { buildPrintDocument } from './printDocument'
 import {
   bindFieldToDesignTarget,
@@ -92,11 +91,6 @@ type DesignerMessage = Partial<DesignerSelection> & {
   yMm?: number
 }
 
-type BridgeSnapshotRequestState =
-  | { status: 'pending'; updatedAt: number }
-  | { status: 'completed'; updatedAt: number }
-  | { status: 'failed'; updatedAt: number }
-
 type DesignerTableInfo = {
   id: string
   label: string
@@ -140,8 +134,6 @@ const FONT_OPTIONS = [
 function App() {
   const isChromeExtension = isChromeExtensionRuntime()
   const chromeBridgeLoadedRef = useRef(false)
-  const bridgeSnapshotRequestsRef = useRef(new Map<string, BridgeSnapshotRequestState>())
-  const skipNextPassiveBridgePublishRef = useRef<PiSnapshot | null>(null)
   const selectionReadSequenceRef = useRef(0)
   const selectionLoadCountRef = useRef(0)
   const selectionReloadTokenRef = useRef(0)
@@ -150,11 +142,10 @@ function App() {
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
-  const [busyAction, setBusyAction] = useState<'preview' | 'download' | null>(null)
+  const [busyAction, setBusyAction] = useState<'workspace' | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
-  const [bridgeSyncAt, setBridgeSyncAt] = useState<string | null>(null)
   const [activePanel, setActivePanel] = useState<ActivePanel>('print')
   const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 860,
@@ -175,7 +166,7 @@ function App() {
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
 
   useEffect(() => {
-    if (!isChromeExtension || typeof window === 'undefined') {
+    if (typeof window === 'undefined') {
       return undefined
     }
 
@@ -187,7 +178,7 @@ function App() {
     syncPanelLayout(narrowPanel)
     narrowPanel.addEventListener('change', syncPanelLayout)
     return () => narrowPanel.removeEventListener('change', syncPanelLayout)
-  }, [isChromeExtension])
+  }, [])
 
   const templates = useMemo(
     () => mergeTemplates(templateWorkspace.customTemplates),
@@ -359,119 +350,6 @@ function App() {
   }, [isChromeExtension, loadCurrentSelection])
 
   useEffect(() => {
-    if (isChromeExtension || snapshot?.context.source !== 'feishu') {
-      return
-    }
-
-    if (skipNextPassiveBridgePublishRef.current === snapshot) {
-      skipNextPassiveBridgePublishRef.current = null
-      return
-    }
-
-    publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
-  }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
-
-  useEffect(() => {
-    if (isChromeExtension) {
-      return undefined
-    }
-
-    const handleSnapshotRequest = (event: MessageEvent<unknown>) => {
-      if (
-        event.source !== window ||
-        event.origin !== window.location.origin ||
-        !isFeishuSnapshotRequestMessage(event.data)
-      ) {
-        return
-      }
-
-      const requestId = event.data.requestId
-      const now = Date.now()
-      for (const [storedRequestId, storedRequest] of bridgeSnapshotRequestsRef.current) {
-        if (storedRequest.status !== 'pending' && now - storedRequest.updatedAt > 60_000) {
-          bridgeSnapshotRequestsRef.current.delete(storedRequestId)
-        }
-      }
-
-      if (bridgeSnapshotRequestsRef.current.has(requestId)) {
-        return
-      }
-
-      const selectionReadSequence = ++selectionReadSequenceRef.current
-      const selectionReloadToken = selectionReloadTokenRef.current
-      const requestedTemplate = activeTemplate
-      bridgeSnapshotRequestsRef.current.set(requestId, { status: 'pending', updatedAt: now })
-      void withTimeout(loadPiSnapshot(activeTemplate), 10_000)
-        .then((freshSnapshot) => {
-          if (
-            freshSnapshot.context.source !== 'feishu' ||
-            selectionReadSequence !== selectionReadSequenceRef.current ||
-            activeTemplateRef.current !== requestedTemplate
-          ) {
-            bridgeSnapshotRequestsRef.current.set(requestId, {
-              status: 'failed',
-              updatedAt: Date.now(),
-            })
-            return
-          }
-          publishFeishuSnapshot(freshSnapshot, dataSourceSchema, activeTemplate, requestId)
-          skipNextPassiveBridgePublishRef.current = freshSnapshot
-          setSnapshot(freshSnapshot)
-          if (selectionReloadToken === selectionReloadTokenRef.current) {
-            selectionReloadPendingRef.current = false
-            setIsSelectionReloadPending(false)
-          }
-          bridgeSnapshotRequestsRef.current.set(requestId, {
-            status: 'completed',
-            updatedAt: Date.now(),
-          })
-        })
-        .catch((error) => {
-          bridgeSnapshotRequestsRef.current.set(requestId, {
-            status: 'failed',
-            updatedAt: Date.now(),
-          })
-          addDiagnosticEvent(
-            'warning',
-            'Chrome 请求同步时，飞书当前勾选读取失败。',
-            formatUnknownError(error),
-          )
-        })
-    }
-
-    window.addEventListener('message', handleSnapshotRequest)
-    return () => window.removeEventListener('message', handleSnapshotRequest)
-  }, [activeTemplate, addDiagnosticEvent, dataSourceSchema, isChromeExtension])
-
-  useEffect(() => {
-    if (isChromeExtension) {
-      return
-    }
-
-    const handleBridgeAck = (event: MessageEvent<unknown>) => {
-      if (
-        event.source !== window ||
-        event.origin !== window.location.origin ||
-        !isFeishuBridgeAckMessage(event.data)
-      ) {
-        return
-      }
-
-      setBridgeSyncAt(
-        new Date(event.data.receivedAt).toLocaleTimeString('zh-CN', {
-          hour12: false,
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        }),
-      )
-    }
-
-    window.addEventListener('message', handleBridgeAck)
-    return () => window.removeEventListener('message', handleBridgeAck)
-  }, [isChromeExtension])
-
-  useEffect(() => {
     let isMounted = true
 
     async function probe() {
@@ -546,29 +424,18 @@ function App() {
     !busyAction
   const canPickRecords = !isChromeExtension && Boolean(snapshot) && !isLoading && !wrongTableIssue
 
-  async function handlePreviewPdf() {
-    if (!printPayload) {
+  async function handleOpenPrintWorkspace() {
+    if (!printPayload || !canRenderPdf) {
       return
     }
 
-    await runPdfAction('preview', async () => {
-      await previewPrint(printPayload)
-      await notifyHost('打印窗口已打开；可直接打印或选择“另存为 PDF”。')
+    await runPdfAction('workspace', async () => {
+      await openPrintWorkspace(printPayload)
+      await notifyHost('独立打印窗口已打开；可以调整窗口大小后再打印或另存 PDF。')
     })
   }
 
-  async function handleDownloadPdf() {
-    if (!printPayload) {
-      return
-    }
-
-    await runPdfAction('download', async () => {
-      await saveAsPdf(printPayload)
-      await notifyHost('请在打印窗口中选择“另存为 PDF”。')
-    })
-  }
-
-  async function runPdfAction(label: 'preview' | 'download', action: () => Promise<void>) {
+  async function runPdfAction(label: 'workspace', action: () => Promise<void>) {
     setBusyAction(label)
     setMessage(null)
 
@@ -839,7 +706,11 @@ function App() {
                 title={wrongTableIssue?.message}
                 type="button"
               >
-                {wrongTableIssue ? `先切到 ${activeTemplate.mainTableName}` : '进入批量模式'}
+                {wrongTableIssue
+                  ? `先切到 ${activeTemplate.mainTableName}`
+                  : snapshot?.selectedRecordIds.length
+                    ? '重新选择记录'
+                    : '选择要打印的记录'}
               </button>
             )}
           </div>
@@ -884,7 +755,7 @@ function App() {
                     </>
                   ) : (
                     <button onClick={() => void handlePickRecords()} disabled={!canPickRecords} type="button">
-                      批量导出记录
+                      选择要打印的记录
                     </button>
                   )}
                   <button onClick={() => handleEditTemplate(activeTemplate)} type="button">
@@ -932,20 +803,13 @@ function App() {
               编辑
             </button>
             <button
-              className="toolbar-button"
-              onClick={() => void handleDownloadPdf()}
-              disabled={!canRenderPdf}
-              type="button"
-            >
-              {busyAction === 'download' ? '打开中' : '另存 PDF'}
-            </button>
-            <button
               className="toolbar-button toolbar-button-primary"
-              onClick={() => void handlePreviewPdf()}
+              onClick={() => void handleOpenPrintWorkspace()}
               disabled={!canRenderPdf}
+              title="在独立窗口中可打印或选择“另存为 PDF”"
               type="button"
             >
-              {busyAction === 'preview' ? '打开中' : '打印'}
+              {busyAction === 'workspace' ? '打开中' : '在新窗口打印'}
             </button>
           </div>
         </header>
@@ -954,7 +818,13 @@ function App() {
           <span>{getDataSourceLabel(snapshot?.context.source)}</span>
           <span>{pdfStatusLabel(pdfStatus)}</span>
           <span>{DOCUMENT_KIND_LABELS[activeTemplate.documentKind]}</span>
-          {bridgeSyncAt ? <span>Chrome 已同步 {bridgeSyncAt}</span> : null}
+          <span>当前表：{snapshot?.context.mainTableName || '尚未读取'}</span>
+          <span>模板需要：{activeTemplate.mainTableName || '尚未设置'}</span>
+          <span>
+            {isSelectionReloadPending
+              ? '正在更新勾选…'
+              : `已勾选：${snapshot?.selectedRecordIds.length ?? 0} 条`}
+          </span>
           <strong>{currentInvoiceNo}</strong>
           <span>{snapshot?.payload.documents.length ?? 0} 条单据</span>
           <span>{currentItemCount} 行明细</span>
@@ -1081,8 +951,8 @@ function TemplateSidebar({
           placeholder="搜索模板"
           value={search}
         />
-        <label className="sidebar-icon-button" htmlFor="template-sidebar-upload" title="上传模板">
-          +
+        <label className="sidebar-icon-button" htmlFor="template-sidebar-upload" title="导入飞书模板">
+          导入
         </label>
         <input
           accept=".txt,.json"
@@ -1168,10 +1038,7 @@ function DiagnosticsPanel({
     <section className="panel diagnostics-panel">
       <div className="panel-heading-row">
         <PanelTitle title="诊断信息" />
-        <StatusChip
-          label={events.some((event) => event.level === 'error') ? '发现错误' : '运行中'}
-          tone={events.some((event) => event.level === 'error') ? 'warm' : 'cool'}
-        />
+        <StatusChip label="运行记录" tone="cool" />
       </div>
       <dl className="meta-grid diagnostics-grid">
         <MetaItem label="页面地址" value={runtimeInfo.href} />
@@ -1188,6 +1055,7 @@ function DiagnosticsPanel({
         <MetaItem label="字段结构" value={dataSourceSchema ? `${dataSourceSchema.source} · ${dataSourceSchema.tables.length} 表` : '读取中'} />
       </dl>
       <div className="diagnostic-events">
+        <p className="muted-text">以下是本次打开后的历史记录；当前状态请以上方提示为准。</p>
         {events.map((event) => (
           <article className={`diagnostic-event diagnostic-event-${event.level}`} key={event.id}>
             <div>
@@ -1271,7 +1139,7 @@ function TemplateConsole({
           <PanelTitle title="模板保存台" />
           <div className="header-actions">
             <label className="small-button file-button" htmlFor="template-upload">
-              上传模板
+              导入飞书模板
             </label>
             <input
               accept=".txt,.json"
@@ -1291,7 +1159,9 @@ function TemplateConsole({
             </button>
           </div>
         </div>
-        <p className="hint-text">支持上传飞书官方导出的模板 `.txt` 文件，导入后可选择源数据并预览保存。</p>
+        <p className="hint-text">
+          支持飞书导出的 .txt 模板，也支持兼容的 .json 模板。导入后请选择主表、明细表和关联字段，再保存模板。
+        </p>
         <div className="template-list">
           {templates.map((template) => (
             <div
@@ -1377,7 +1247,7 @@ function TemplateDesigner({
 }) {
   const [draft, setDraft] = useState(template)
   const [selected, setSelected] = useState<DesignerSelection | null>(null)
-  const [busyAction, setBusyAction] = useState<'preview' | 'download' | null>(null)
+  const [busyAction, setBusyAction] = useState<'workspace' | null>(null)
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const [designerNotice, setDesignerNotice] = useState<string | null>(null)
   const [isDesignerLeftCollapsed, setIsDesignerLeftCollapsed] = useState(false)
@@ -1654,20 +1524,19 @@ function TemplateDesigner({
     })
   }
 
-  async function runDesignerPdfAction(label: 'preview' | 'download') {
-    if (!previewPayload) {
+  async function openDesignerPrintWorkspace() {
+    if (!previewPayload || !canRenderPdf) {
       return
     }
 
-    setBusyAction(label)
+    setBusyAction('workspace')
     try {
-      if (label === 'preview') {
-        await previewPrint(previewPayload)
-        await notifyHost('打印预览已打开。')
-      } else {
-        await saveAsPdf(previewPayload)
-        await notifyHost('请在打印窗口中选择“另存为 PDF”。')
-      }
+      await openPrintWorkspace({
+        ...previewPayload,
+        designMode: false,
+        selectedDesignId: undefined,
+      })
+      await notifyHost('独立打印窗口已打开。')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'PDF 操作失败。'
       await notifyHost(message)
@@ -1731,22 +1600,15 @@ function TemplateDesigner({
             退出编辑
           </button>
           <button
-            className="small-button"
+            className="small-button small-button-accent"
             disabled={!canRenderPdf}
-            onClick={() => void runDesignerPdfAction('preview')}
+            onClick={() => void openDesignerPrintWorkspace()}
+            title="在独立窗口中可打印或选择“另存为 PDF”"
             type="button"
           >
-            {busyAction === 'preview' ? '打开中' : '打印预览'}
+            {busyAction === 'workspace' ? '打开中' : '在新窗口打印'}
           </button>
-          <button
-            className="small-button"
-            disabled={!canRenderPdf}
-            onClick={() => void runDesignerPdfAction('download')}
-            type="button"
-          >
-            {busyAction === 'download' ? '打开中' : '另存 PDF'}
-          </button>
-          <button className="small-button small-button-accent" onClick={() => onSave(draft)} type="button">
+          <button className="small-button" onClick={() => onSave(draft)} type="button">
             保存模板
           </button>
         </div>
