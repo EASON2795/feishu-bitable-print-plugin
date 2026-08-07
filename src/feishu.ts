@@ -316,7 +316,7 @@ export function subscribeSelectionChange(onChange: () => void): () => void {
       onChange()
     })
   } catch {
-    return () => {}
+    // Older Feishu hosts may not expose the event. Keep the polling fallback active.
   }
 
   const pollCheckedRecords = async () => {

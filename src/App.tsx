@@ -11,7 +11,11 @@ import {
 } from '@runtime-host'
 import { getMockPiSnapshot } from './mockData'
 import { importDataFile } from './dataImport'
-import { isFeishuBridgeAckMessage, publishFeishuSnapshot } from './bridgeProtocol'
+import {
+  isFeishuBridgeAckMessage,
+  isFeishuSnapshotRequestMessage,
+  publishFeishuSnapshot,
+} from './bridgeProtocol'
 import { DOCUMENT_KIND_LABELS } from './piConfig'
 import { checkLocalPrint, getPrintRuntimeLabel, previewPrint, saveAsPdf } from './localPrint'
 import { buildPrintDocument } from './printDocument'
@@ -319,6 +323,28 @@ function App() {
     }
 
     publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
+  }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
+
+  useEffect(() => {
+    if (isChromeExtension) {
+      return undefined
+    }
+
+    const handleSnapshotRequest = (event: MessageEvent<unknown>) => {
+      if (
+        event.source !== window ||
+        event.origin !== window.location.origin ||
+        !isFeishuSnapshotRequestMessage(event.data) ||
+        snapshot?.context.source !== 'feishu'
+      ) {
+        return
+      }
+
+      publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
+    }
+
+    window.addEventListener('message', handleSnapshotRequest)
+    return () => window.removeEventListener('message', handleSnapshotRequest)
   }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
 
   useEffect(() => {
