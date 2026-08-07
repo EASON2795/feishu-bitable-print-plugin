@@ -31,6 +31,7 @@ import {
   loadTemplateWorkspace,
   mergeTemplates,
   normalizeTemplateForSave,
+  removeCustomTemplate,
   saveTemplateWorkspace,
   type TemplateWorkspace,
 } from './templateStore'
@@ -139,6 +140,7 @@ function App() {
   const selectionReloadTokenRef = useRef(0)
   const selectionReloadPendingRef = useRef(false)
   const activeTemplateRef = useRef<PrintTemplate | null>(null)
+  const deleteTemplateTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
@@ -164,6 +166,17 @@ function App() {
   )
   const [bridgedTemplate, setBridgedTemplate] = useState<PrintTemplate | null>(null)
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
+  const [pendingDeleteTemplate, setPendingDeleteTemplate] = useState<PrintTemplate | null>(null)
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null)
+
+  const cancelTemplateDelete = useCallback(() => {
+    setPendingDeleteTemplate(null)
+    window.setTimeout(() => {
+      if (deleteTemplateTriggerRef.current?.isConnected) {
+        deleteTemplateTriggerRef.current.focus()
+      }
+    }, 0)
+  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -179,6 +192,15 @@ function App() {
     narrowPanel.addEventListener('change', syncPanelLayout)
     return () => narrowPanel.removeEventListener('change', syncPanelLayout)
   }, [])
+
+  useEffect(() => {
+    if (!templateNotice) {
+      return undefined
+    }
+
+    const timeout = window.setTimeout(() => setTemplateNotice(null), 4500)
+    return () => window.clearTimeout(timeout)
+  }, [templateNotice])
 
   const templates = useMemo(
     () => mergeTemplates(templateWorkspace.customTemplates),
@@ -456,35 +478,63 @@ function App() {
       return
     }
 
+    const selectionReadSequence = ++selectionReadSequenceRef.current
+    const templateAtStart = activeTemplate
+    const isStaleSelectionLoad = () =>
+      selectionReadSequence !== selectionReadSequenceRef.current ||
+      activeTemplateRef.current !== templateAtStart
+    selectionLoadCountRef.current += 1
     setIsLoading(true)
     setMessage(null)
 
     try {
       const recordIds = await pickPiRecordIds(snapshot)
+      if (isStaleSelectionLoad()) {
+        return
+      }
       const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate, recordIds), 6000)
+      if (isStaleSelectionLoad()) {
+        return
+      }
       setSnapshot(nextSnapshot)
       addDiagnosticEvent('info', `手动选择记录完成：${recordIds.length} 条。`)
     } catch (pickError) {
+      if (isStaleSelectionLoad()) {
+        return
+      }
       const nextMessage = pickError instanceof Error ? pickError.message : '选择记录失败。'
       setMessage(nextMessage)
       addDiagnosticEvent('error', '选择记录失败。', formatUnknownError(pickError))
       await notifyHost(nextMessage)
     } finally {
-      setIsLoading(false)
+      selectionLoadCountRef.current = Math.max(0, selectionLoadCountRef.current - 1)
+      if (selectionLoadCountRef.current === 0) {
+        setIsLoading(false)
+      }
     }
   }
 
   function commitTemplateWorkspace(nextWorkspace: TemplateWorkspace) {
-    setTemplateWorkspace(nextWorkspace)
-    saveTemplateWorkspace(nextWorkspace)
+    try {
+      saveTemplateWorkspace(nextWorkspace)
+      setTemplateWorkspace(nextWorkspace)
+      return true
+    } catch (storageError) {
+      setMessage('模板没有保存成功，请检查浏览器是否允许本地存储。')
+      addDiagnosticEvent('error', '模板本地存储失败。', formatUnknownError(storageError))
+      return false
+    }
   }
 
   function handleUseTemplate(templateId: string) {
     setBridgedTemplate(null)
-    commitTemplateWorkspace({
+    const didSave = commitTemplateWorkspace({
       ...templateWorkspace,
       activeTemplateId: templateId,
     })
+    if (!didSave) {
+      return
+    }
     setActivePanel('print')
     setIsMoreMenuOpen(false)
     setMessage(null)
@@ -518,32 +568,76 @@ function App() {
         )
       : [...templateWorkspace.customTemplates, savedTemplate]
 
-    commitTemplateWorkspace({
+    const didSave = commitTemplateWorkspace({
       activeTemplateId: savedTemplate.id,
       customTemplates,
     })
+    if (!didSave) {
+      return
+    }
     setEditingTemplate(null)
     setActivePanel('print')
     setMessage('模板已保存到当前浏览器。')
   }
 
   function handleDeleteTemplate(templateId: string) {
-    const customTemplates = templateWorkspace.customTemplates.filter(
-      (template) => template.id !== templateId,
-    )
-    const activeTemplateId =
-      templateWorkspace.activeTemplateId === templateId
-        ? templates[0].id
-        : templateWorkspace.activeTemplateId
+    const template = templateWorkspace.customTemplates.find((current) => current.id === templateId)
+    if (!template || template.isBuiltIn) {
+      setMessage('系统内置模板不能删除；可以复制后修改自定义副本。')
+      return false
+    }
 
-    commitTemplateWorkspace({
-      activeTemplateId,
-      customTemplates,
-    })
+    const deletingEffectiveTemplate = activeTemplate.id === templateId
+    const nextWorkspace = removeCustomTemplate(templateWorkspace, templateId)
+    if (nextWorkspace === templateWorkspace || !commitTemplateWorkspace(nextWorkspace)) {
+      return false
+    }
 
     if (editingTemplate?.id === templateId) {
       setEditingTemplate(null)
     }
+
+    if (bridgedTemplate?.id === templateId) {
+      setBridgedTemplate(null)
+    }
+
+    if (deletingEffectiveTemplate) {
+      selectionReadSequenceRef.current += 1
+      setSnapshot(null)
+      setIsLoading(!isChromeExtension)
+    }
+
+    setTemplateNotice(`已删除自定义模板「${template.name}」。`)
+    addDiagnosticEvent('info', `已删除自定义模板「${template.name}」。`)
+    return true
+  }
+
+  function requestDeleteTemplate(template: PrintTemplate, trigger: HTMLButtonElement) {
+    if (template.isBuiltIn) {
+      setMessage('系统内置模板不能删除；可以复制后修改自定义副本。')
+      return
+    }
+
+    deleteTemplateTriggerRef.current = trigger
+    setPendingDeleteTemplate(template)
+  }
+
+  function confirmTemplateDelete() {
+    if (!pendingDeleteTemplate || !handleDeleteTemplate(pendingDeleteTemplate.id)) {
+      return
+    }
+
+    setPendingDeleteTemplate(null)
+    window.setTimeout(() => {
+      const nextFocusTarget =
+        document.querySelector<HTMLButtonElement>('.template-nav-item-active') ??
+        document.querySelector<HTMLButtonElement>(
+          '.template-row-active .template-row-actions button:not(:disabled)',
+        ) ??
+        document.querySelector<HTMLButtonElement>('[data-template-delete-focus-fallback]') ??
+        document.querySelector<HTMLButtonElement>('.sidebar-create-button')
+      nextFocusTarget?.focus()
+    }, 0)
   }
 
   async function handleImportTemplateFile(file: File) {
@@ -623,6 +717,7 @@ function App() {
           activePanel={activePanel}
           activeTemplateId={activeTemplate.id}
           onCollapse={() => setIsControlPanelCollapsed(true)}
+          onDeleteTemplate={requestDeleteTemplate}
           onImportTemplateFile={(file) => void handleImportTemplateFile(file)}
           onNewTemplate={handleNewTemplate}
           onSearchChange={setTemplateSearch}
@@ -667,6 +762,7 @@ function App() {
           </button>
           <button
             className={activePanel === 'templates' ? 'app-tab app-tab-active' : 'app-tab'}
+            data-template-delete-focus-fallback
             onClick={() => setActivePanel('templates')}
             type="button"
           >
@@ -874,7 +970,7 @@ function App() {
               editingTemplate={editingTemplate}
               onCancelEdit={() => setEditingTemplate(null)}
               onCopyTemplate={handleCopyTemplate}
-              onDeleteTemplate={handleDeleteTemplate}
+              onDeleteTemplate={requestDeleteTemplate}
               onEditTemplate={handleEditTemplate}
               onImportTemplateFile={(file) => void handleImportTemplateFile(file)}
               onNewTemplate={handleNewTemplate}
@@ -902,6 +998,21 @@ function App() {
           </section>
         )}
       </main>
+      {pendingDeleteTemplate ? (
+        <TemplateDeleteDialog
+          onCancel={cancelTemplateDelete}
+          onConfirm={confirmTemplateDelete}
+          template={pendingDeleteTemplate}
+        />
+      ) : null}
+      {templateNotice ? (
+        <div aria-live="polite" className="template-action-toast" role="status">
+          <span>{templateNotice}</span>
+          <button aria-label="关闭模板提示" onClick={() => setTemplateNotice(null)} type="button">
+            ×
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -910,6 +1021,7 @@ function TemplateSidebar({
   activePanel,
   activeTemplateId,
   onCollapse,
+  onDeleteTemplate,
   onImportTemplateFile,
   onNewTemplate,
   onSearchChange,
@@ -920,6 +1032,7 @@ function TemplateSidebar({
   activePanel: ActivePanel
   activeTemplateId: string
   onCollapse: () => void
+  onDeleteTemplate: (template: PrintTemplate, trigger: HTMLButtonElement) => void
   onImportTemplateFile: (file: File) => void
   onNewTemplate: () => void
   onSearchChange: (value: string) => void
@@ -978,20 +1091,36 @@ function TemplateSidebar({
           <div className="template-nav-list">
             {visibleTemplates.length ? (
               visibleTemplates.map((template) => (
-                <button
-                  className={
-                    template.id === activeTemplateId
-                      ? 'template-nav-item template-nav-item-active'
-                      : 'template-nav-item'
-                  }
-                  key={template.id}
-                  onClick={() => onUseTemplate(template.id)}
-                  title={`${DOCUMENT_KIND_LABELS[template.documentKind]} · ${template.name}`}
-                  type="button"
-                >
-                  <span className="template-nav-icon" aria-hidden="true" />
-                  <span>{template.name}</span>
-                </button>
+                <div className="template-nav-row" key={template.id}>
+                  <button
+                    className={
+                      template.id === activeTemplateId
+                        ? 'template-nav-item template-nav-item-active'
+                        : 'template-nav-item'
+                    }
+                    onClick={() => onUseTemplate(template.id)}
+                    title={`${DOCUMENT_KIND_LABELS[template.documentKind]} · ${template.name}`}
+                    type="button"
+                  >
+                    <span className="template-nav-icon" aria-hidden="true" />
+                    <span>{template.name}</span>
+                  </button>
+                  {template.isBuiltIn ? (
+                    <span className="template-nav-protected" title="系统内置模板不可删除">
+                      内置
+                    </span>
+                  ) : (
+                    <button
+                      aria-label={`删除自定义模板：${template.name}`}
+                      className="template-nav-delete"
+                      onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
+                      title={`删除「${template.name}」`}
+                      type="button"
+                    >
+                      删除
+                    </button>
+                  )}
+                </div>
               ))
             ) : (
               <p className="template-nav-empty">没有匹配的模板。</p>
@@ -1121,7 +1250,7 @@ function TemplateConsole({
   editingTemplate: PrintTemplate | null
   onCancelEdit: () => void
   onCopyTemplate: (template: PrintTemplate) => void
-  onDeleteTemplate: (templateId: string) => void
+  onDeleteTemplate: (template: PrintTemplate, trigger: HTMLButtonElement) => void
   onEditTemplate: (template: PrintTemplate) => void
   onImportTemplateFile: (file: File) => void
   onNewTemplate: () => void
@@ -1162,6 +1291,9 @@ function TemplateConsole({
         <p className="hint-text">
           支持飞书导出的 .txt 模板，也支持兼容的 .json 模板。导入后请选择主表、明细表和关联字段，再保存模板。
         </p>
+        <p className="hint-text">
+          自定义模板可以删除；系统内置模板会保留，复制后可自由修改。
+        </p>
         <div className="template-list">
           {templates.map((template) => (
             <div
@@ -1196,17 +1328,18 @@ function TemplateConsole({
                 </button>
                 {!template.isBuiltIn ? (
                   <button
+                    aria-label={`删除自定义模板：${template.name}`}
                     className="danger-button"
-                    onClick={() => {
-                      if (window.confirm(`删除模板「${template.name}」？`)) {
-                        onDeleteTemplate(template.id)
-                      }
-                    }}
+                    onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
                     type="button"
                   >
                     删除
                   </button>
-                ) : null}
+                ) : (
+                  <button className="protected-button" disabled title="系统内置模板不可删除" type="button">
+                    系统保留
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -1225,6 +1358,92 @@ function TemplateConsole({
         <TemplateFieldOverview template={activeTemplate} />
       )}
     </>
+  )
+}
+
+function TemplateDeleteDialog({
+  onCancel,
+  onConfirm,
+  template,
+}: {
+  onCancel: () => void
+  onConfirm: () => void
+  template: PrintTemplate
+}) {
+  const cancelButtonRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCancel()
+        return
+      }
+
+      if (event.key !== 'Tab' || !dialogRef.current) {
+        return
+      }
+
+      const focusableElements = Array.from(
+        dialogRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+      )
+      const firstElement = focusableElements[0]
+      const lastElement = focusableElements[focusableElements.length - 1]
+      if (!firstElement || !lastElement) {
+        return
+      }
+
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault()
+        lastElement.focus()
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault()
+        firstElement.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onCancel])
+
+  return (
+    <div
+      className="template-delete-backdrop"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) {
+          onCancel()
+        }
+      }}
+    >
+      <section
+        aria-describedby="template-delete-description"
+        aria-labelledby="template-delete-title"
+        aria-modal="true"
+        className="template-delete-dialog"
+        ref={dialogRef}
+        role="dialog"
+      >
+        <p className="eyebrow">模板管理</p>
+        <h2 id="template-delete-title">删除自定义模板？</h2>
+        <p id="template-delete-description">
+          将永久删除“{template.name}”及其排版设置。此操作无法撤销。
+        </p>
+        <p className="template-delete-note">
+          已经打开的打印窗口是本次快照，如不再需要请一并关闭。
+        </p>
+        <div className="template-delete-actions">
+          <button ref={cancelButtonRef} onClick={onCancel} type="button">
+            取消
+          </button>
+          <button className="template-delete-confirm" onClick={onConfirm} type="button">
+            删除模板
+          </button>
+        </div>
+      </section>
+    </div>
   )
 }
 

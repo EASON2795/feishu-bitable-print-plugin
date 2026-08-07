@@ -55,6 +55,27 @@ export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
   )
 }
 
+export function removeCustomTemplate(
+  workspace: TemplateWorkspace,
+  templateId: string,
+): TemplateWorkspace {
+  const template = workspace.customTemplates.find((current) => current.id === templateId)
+  if (!template || template.isBuiltIn) {
+    return workspace
+  }
+
+  const customTemplates = workspace.customTemplates.filter((current) => current.id !== templateId)
+  const activeTemplateId =
+    workspace.activeTemplateId === templateId
+      ? TEMPLATE_REGISTRY[0].id
+      : workspace.activeTemplateId
+
+  return {
+    activeTemplateId,
+    customTemplates,
+  }
+}
+
 export function mergeTemplates(customTemplates: PrintTemplate[]): PrintTemplate[] {
   return [...TEMPLATE_REGISTRY, ...customTemplates]
 }

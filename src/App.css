@@ -145,6 +145,13 @@
   gap: 2px;
 }
 
+.template-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: center;
+}
+
 .template-nav-item {
   min-width: 0;
   display: grid;
@@ -202,6 +209,36 @@
   border-width: 0 2px 2px 0;
   content: '';
   transform: rotate(45deg);
+}
+
+.template-nav-delete,
+.template-nav-protected {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  min-height: 30px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.template-nav-delete {
+  border: 1px solid transparent;
+  color: #a0352f;
+  background: transparent;
+  cursor: pointer;
+}
+
+.template-nav-delete:hover,
+.template-nav-delete:focus-visible {
+  border-color: #efb0aa;
+  outline: none;
+  background: #fff2f0;
+}
+
+.template-nav-protected {
+  color: #8b98a7;
 }
 
 .template-nav-empty {
@@ -505,6 +542,13 @@
   background: #fff4f2;
 }
 
+.template-row-actions .protected-button {
+  color: #7b8792;
+  border-color: #d7dee6;
+  background: #f3f5f7;
+  cursor: not-allowed;
+}
+
 .field-label {
   display: block;
   margin: 0 0 6px;
@@ -593,6 +637,129 @@
   grid-template-columns: repeat(2, minmax(54px, 1fr));
   gap: 6px;
   align-self: start;
+}
+
+.template-delete-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(18 31 43 / 48%);
+}
+
+.template-delete-dialog {
+  width: min(440px, 100%);
+  padding: 22px;
+  border: 1px solid #d7dee6;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgb(20 34 46 / 24%);
+}
+
+.template-delete-dialog h2 {
+  margin: 4px 0 10px;
+  color: #17262e;
+  font-size: 20px;
+}
+
+.template-delete-dialog > p:not(.eyebrow) {
+  margin: 0;
+  color: #566570;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.template-delete-dialog .template-delete-note {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  color: #7a560c;
+  background: #fff8df;
+  font-size: 12px;
+}
+
+.template-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.template-delete-actions button {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid #b9c7d5;
+  border-radius: 7px;
+  color: #17262e;
+  background: #ffffff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.template-delete-actions button:hover,
+.template-delete-actions button:focus-visible {
+  border-color: #6e879c;
+  outline: 2px solid rgb(21 94 239 / 22%);
+  outline-offset: 2px;
+}
+
+.template-delete-actions .template-delete-confirm {
+  color: #ffffff;
+  border-color: #b63b32;
+  background: #b63b32;
+}
+
+.template-delete-actions .template-delete-confirm:hover,
+.template-delete-actions .template-delete-confirm:focus-visible {
+  border-color: #962d26;
+  background: #962d26;
+}
+
+.template-action-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 11px 12px 11px 14px;
+  border: 1px solid #8ac9b3;
+  border-radius: 9px;
+  color: #0c4d39;
+  background: #effbf5;
+  box-shadow: 0 14px 38px rgb(20 34 46 / 18%);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.template-action-toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.template-action-toast button {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.template-action-toast button:hover,
+.template-action-toast button:focus-visible {
+  outline: 2px solid rgb(12 77 57 / 22%);
+  background: rgb(12 77 57 / 8%);
 }
 
 .form-grid {
@@ -1730,6 +1897,27 @@
   .app-shell-panel-collapsed .template-management-stage {
     height: calc(100vh - 210px);
     padding: 12px;
+  }
+
+  .template-row-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .template-row-actions button {
+    min-height: 40px;
+  }
+
+  .template-delete-backdrop {
+    padding: 12px;
+  }
+
+  .template-delete-dialog {
+    padding: 18px;
+  }
+
+  .template-delete-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 }
 
