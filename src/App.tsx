@@ -92,6 +92,11 @@ type DesignerMessage = Partial<DesignerSelection> & {
   yMm?: number
 }
 
+type BridgeSnapshotRequestState =
+  | { status: 'pending'; updatedAt: number }
+  | { status: 'completed'; updatedAt: number }
+  | { status: 'failed'; updatedAt: number }
+
 type DesignerTableInfo = {
   id: string
   label: string
@@ -135,8 +140,16 @@ const FONT_OPTIONS = [
 function App() {
   const isChromeExtension = isChromeExtensionRuntime()
   const chromeBridgeLoadedRef = useRef(false)
+  const bridgeSnapshotRequestsRef = useRef(new Map<string, BridgeSnapshotRequestState>())
+  const skipNextPassiveBridgePublishRef = useRef<PiSnapshot | null>(null)
+  const selectionReadSequenceRef = useRef(0)
+  const selectionLoadCountRef = useRef(0)
+  const selectionReloadTokenRef = useRef(0)
+  const selectionReloadPendingRef = useRef(false)
+  const activeTemplateRef = useRef<PrintTemplate | null>(null)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
   const [busyAction, setBusyAction] = useState<'preview' | 'download' | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
@@ -187,6 +200,7 @@ function App() {
     [templates, templateWorkspace.activeTemplateId],
   )
   const activeTemplate = bridgedTemplate ?? localActiveTemplate
+  activeTemplateRef.current = activeTemplate
   const previewTemplate =
     activePanel === 'templates' && editingTemplate ? editingTemplate : activeTemplate
   const runtimeInfo = useMemo(() => collectRuntimeInfo(), [])
@@ -207,6 +221,13 @@ function App() {
   )
 
   const loadCurrentSelection = useCallback(async () => {
+    const selectionReadSequence = ++selectionReadSequenceRef.current
+    const selectionReloadToken = selectionReloadTokenRef.current
+    const templateAtStart = activeTemplate
+    const isStaleSelectionLoad = () =>
+      selectionReadSequence !== selectionReadSequenceRef.current ||
+      activeTemplateRef.current !== templateAtStart
+    selectionLoadCountRef.current += 1
     setIsLoading(true)
     setMessage(null)
     addDiagnosticEvent(
@@ -216,14 +237,24 @@ function App() {
 
     try {
       const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate), 6000)
+      if (isStaleSelectionLoad()) {
+        return
+      }
       setSnapshot(nextSnapshot)
       if (isChromeExtension) {
         const [nextSchema, nextTemplate] = await Promise.all([
           withTimeout(loadDataSourceSchema(), CHROME_SCHEMA_TIMEOUT_MS),
           withTimeout(loadSyncedTemplate(), CHROME_SCHEMA_TIMEOUT_MS),
         ])
+        if (isStaleSelectionLoad()) {
+          return
+        }
         setDataSourceSchema(nextSchema)
         setBridgedTemplate(nextTemplate)
+      }
+      if (selectionReloadToken === selectionReloadTokenRef.current) {
+        selectionReloadPendingRef.current = false
+        setIsSelectionReloadPending(false)
       }
       addDiagnosticEvent(
         'info',
@@ -233,6 +264,9 @@ function App() {
         `来源：${nextSnapshot.context.source}；表：${nextSnapshot.context.mainTableName}；视图：${nextSnapshot.context.viewName}`,
       )
     } catch (hostError) {
+      if (isStaleSelectionLoad()) {
+        return
+      }
       const fallbackMessage =
         hostError instanceof Error ? hostError.message : '无法连接飞书插件容器。'
       setMessage(fallbackMessage)
@@ -244,7 +278,10 @@ function App() {
         addDiagnosticEvent('error', '读取飞书数据失败，已停止打印。', formatUnknownError(hostError))
       }
     } finally {
-      setIsLoading(false)
+      selectionLoadCountRef.current = Math.max(0, selectionLoadCountRef.current - 1)
+      if (selectionLoadCountRef.current === 0) {
+        setIsLoading(false)
+      }
     }
   }, [activeTemplate, addDiagnosticEvent, isChromeExtension])
 
@@ -305,6 +342,10 @@ function App() {
   useEffect(() => {
     let reloadTimer: number | undefined
     const unsubscribe = subscribeSelectionChange(() => {
+      selectionReloadTokenRef.current += 1
+      selectionReloadPendingRef.current = true
+      setIsSelectionReloadPending(true)
+      selectionReadSequenceRef.current += 1
       window.clearTimeout(reloadTimer)
       reloadTimer = window.setTimeout(() => {
         void loadCurrentSelection()
@@ -322,6 +363,11 @@ function App() {
       return
     }
 
+    if (skipNextPassiveBridgePublishRef.current === snapshot) {
+      skipNextPassiveBridgePublishRef.current = null
+      return
+    }
+
     publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate)
   }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
 
@@ -334,18 +380,68 @@ function App() {
       if (
         event.source !== window ||
         event.origin !== window.location.origin ||
-        !isFeishuSnapshotRequestMessage(event.data) ||
-        snapshot?.context.source !== 'feishu'
+        !isFeishuSnapshotRequestMessage(event.data)
       ) {
         return
       }
 
-      publishFeishuSnapshot(snapshot, dataSourceSchema, activeTemplate, event.data.requestId)
+      const requestId = event.data.requestId
+      const now = Date.now()
+      for (const [storedRequestId, storedRequest] of bridgeSnapshotRequestsRef.current) {
+        if (storedRequest.status !== 'pending' && now - storedRequest.updatedAt > 60_000) {
+          bridgeSnapshotRequestsRef.current.delete(storedRequestId)
+        }
+      }
+
+      if (bridgeSnapshotRequestsRef.current.has(requestId)) {
+        return
+      }
+
+      const selectionReadSequence = ++selectionReadSequenceRef.current
+      const selectionReloadToken = selectionReloadTokenRef.current
+      const requestedTemplate = activeTemplate
+      bridgeSnapshotRequestsRef.current.set(requestId, { status: 'pending', updatedAt: now })
+      void withTimeout(loadPiSnapshot(activeTemplate), 10_000)
+        .then((freshSnapshot) => {
+          if (
+            freshSnapshot.context.source !== 'feishu' ||
+            selectionReadSequence !== selectionReadSequenceRef.current ||
+            activeTemplateRef.current !== requestedTemplate
+          ) {
+            bridgeSnapshotRequestsRef.current.set(requestId, {
+              status: 'failed',
+              updatedAt: Date.now(),
+            })
+            return
+          }
+          publishFeishuSnapshot(freshSnapshot, dataSourceSchema, activeTemplate, requestId)
+          skipNextPassiveBridgePublishRef.current = freshSnapshot
+          setSnapshot(freshSnapshot)
+          if (selectionReloadToken === selectionReloadTokenRef.current) {
+            selectionReloadPendingRef.current = false
+            setIsSelectionReloadPending(false)
+          }
+          bridgeSnapshotRequestsRef.current.set(requestId, {
+            status: 'completed',
+            updatedAt: Date.now(),
+          })
+        })
+        .catch((error) => {
+          bridgeSnapshotRequestsRef.current.set(requestId, {
+            status: 'failed',
+            updatedAt: Date.now(),
+          })
+          addDiagnosticEvent(
+            'warning',
+            'Chrome 请求同步时，飞书当前勾选读取失败。',
+            formatUnknownError(error),
+          )
+        })
     }
 
     window.addEventListener('message', handleSnapshotRequest)
     return () => window.removeEventListener('message', handleSnapshotRequest)
-  }, [activeTemplate, dataSourceSchema, isChromeExtension, snapshot])
+  }, [activeTemplate, addDiagnosticEvent, dataSourceSchema, isChromeExtension])
 
   useEffect(() => {
     if (isChromeExtension) {
@@ -445,6 +541,8 @@ function App() {
     Boolean(printPayload?.documents.length) &&
     blockers.length === 0 &&
     pdfStatus === 'online' &&
+    !isLoading &&
+    !isSelectionReloadPending &&
     !busyAction
   const canPickRecords = !isChromeExtension && Boolean(snapshot) && !isLoading && !wrongTableIssue
 
@@ -633,6 +731,7 @@ function App() {
     return (
       <TemplateDesigner
         dataSourceSchema={dataSourceSchema}
+        isDataPrintAllowed={!isLoading && !isSelectionReloadPending}
         onCancel={() => setEditingTemplate(null)}
         onSave={(template) => void handleSaveTemplate(template)}
         pdfStatus={pdfStatus}
@@ -1261,6 +1360,7 @@ function TemplateConsole({
 
 function TemplateDesigner({
   dataSourceSchema,
+  isDataPrintAllowed,
   onCancel,
   onSave,
   pdfStatus,
@@ -1268,6 +1368,7 @@ function TemplateDesigner({
   template,
 }: {
   dataSourceSchema: DataSourceSchema | null
+  isDataPrintAllowed: boolean
   onCancel: () => void
   onSave: (template: PrintTemplate) => void
   pdfStatus: PdfServiceStatus
@@ -1309,7 +1410,8 @@ function TemplateDesigner({
   const mainFieldOptions = mainTableOption?.fields ?? []
   const itemFieldOptions = itemTableOption?.fields ?? []
   const unboundFields = [...draft.mainFields, ...draft.itemFields].filter((field) => !field.label.trim())
-  const canRenderPdf = Boolean(previewPayload) && pdfStatus === 'online' && !busyAction
+  const canRenderPdf =
+    isDataPrintAllowed && Boolean(previewPayload) && pdfStatus === 'online' && !busyAction
   const isDesignerFocusMode = isDesignerLeftCollapsed && isDesignerRightCollapsed
 
   useEffect(() => {
