@@ -157,6 +157,21 @@ function App() {
   const [bridgedTemplate, setBridgedTemplate] = useState<PrintTemplate | null>(null)
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
 
+  useEffect(() => {
+    if (!isChromeExtension || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const narrowPanel = window.matchMedia('(max-width: 859px)')
+    const syncPanelLayout = (event: MediaQueryListEvent | MediaQueryList) => {
+      setIsControlPanelCollapsed(event.matches)
+    }
+
+    syncPanelLayout(narrowPanel)
+    narrowPanel.addEventListener('change', syncPanelLayout)
+    return () => narrowPanel.removeEventListener('change', syncPanelLayout)
+  }, [isChromeExtension])
+
   const templates = useMemo(
     () => mergeTemplates(templateWorkspace.customTemplates),
     [templateWorkspace.customTemplates],
@@ -601,8 +616,16 @@ function App() {
     )
   }
 
+  const appShellClassName = [
+    'app-shell',
+    isChromeExtension ? 'app-shell-chrome' : '',
+    isControlPanelCollapsed ? 'app-shell-panel-collapsed' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   return (
-    <div className={isControlPanelCollapsed ? 'app-shell app-shell-panel-collapsed' : 'app-shell'}>
+    <div className={appShellClassName}>
       {!isControlPanelCollapsed ? (
         <TemplateSidebar
           activePanel={activePanel}
@@ -875,8 +898,12 @@ function App() {
           <iframe className="invoice-preview-frame" sandbox="" title="单据打印预览" srcDoc={previewHtml} />
         ) : (
           <section className="empty-stage">
-            <p>没有可预览的单据。</p>
-            <p className="muted-text">请选择已接入 PDF 版式的模板和记录。</p>
+            <p>{isChromeExtension ? '尚未收到飞书勾选数据。' : '没有可预览的单据。'}</p>
+            <p className="muted-text">
+              {isChromeExtension
+                ? '请保持飞书里的同名插件打开并勾选记录，再点击“同步飞书”。'
+                : '请选择已接入 PDF 版式的模板和记录。'}
+            </p>
           </section>
         )}
       </main>

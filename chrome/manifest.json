@@ -2,10 +2,11 @@
   "manifest_version": 3,
   "name": "单据排版打印台",
   "short_name": "单据打印台",
-  "version": "0.3.1",
+  "version": "0.4.0",
+  "minimum_chrome_version": "114",
   "description": "接收飞书多维表格插件选中的记录，或导入本地数据，排版并打印单据。",
   "offline_enabled": true,
-  "permissions": ["storage"],
+  "permissions": ["storage", "sidePanel"],
   "action": {
     "default_title": "打开单据排版打印台",
     "default_icon": {
@@ -15,6 +16,9 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "index.html"
   },
   "content_scripts": [
     {

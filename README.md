@@ -20,7 +20,7 @@
 
 Chrome 版不需要业务服务器，也不读取飞书登录 Cookie。完整同步模式由飞书插件使用官方 Base SDK 读取当前勾选记录及关联明细，再通过精确匹配的公开插件页面交给 Chrome 打印台；GitHub Pages 只提供静态页面，不接收或保存单据正文。
 
-如果不使用飞书同步，也可以继续导入 CSV、TSV 或 JSON。安装后点击扩展图标，会打开完整的排版工作台。
+如果不使用飞书同步，也可以继续导入 CSV、TSV 或 JSON。安装后点击扩展图标，完整排版工作台会在 Chrome 右侧面板中打开；拖动面板左边缘即可调整宽度，窄宽和宽屏布局会自动切换。
 
 ### 安装试用版
 
@@ -28,7 +28,7 @@ Chrome 版不需要业务服务器，也不读取飞书登录 Cookie。完整同
 2. 在 Chrome 地址栏打开 `chrome://extensions/`。
 3. 打开右上角“开发者模式”。
 4. 点击“加载已解压的扩展程序”，选择项目里的 `dist-chrome/` 文件夹。
-5. 将“单据排版打印台”固定到工具栏，点击图标即可使用。
+5. 将“单据排版打印台”固定到工具栏，点击图标即可在右侧面板中使用。
 
 要读取飞书勾选数据，还需按“在飞书多维表格中使用”一节添加同名飞书插件，并保持插件面板打开。飞书插件读取成功后，Chrome 工作台会显示“飞书数据”。
 
@@ -110,7 +110,7 @@ docker compose up -d --build
 
 - React + TypeScript + Vite
 - 飞书 Base JS SDK
-- Chrome Manifest V3；扩展构建不包含飞书 SDK
+- Chrome Manifest V3 + 原生 Side Panel；扩展构建不包含飞书 SDK
 - 浏览器原生打印与“另存为 PDF”
 - localStorage 保存自定义模板
 - GitHub Actions 自动验证与部署

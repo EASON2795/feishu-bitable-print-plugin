@@ -9,9 +9,9 @@ const TRUSTED_PLUGIN_PATH = '/feishu-bitable-print-plugin/'
 const MAX_BRIDGE_BYTES = 2 * 1024 * 1024
 const MAX_DOCUMENTS = 20
 
-chrome.action.onClicked.addListener(() => {
-  void chrome.tabs.create({ url: chrome.runtime.getURL('index.html') })
-})
+void chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error('无法启用 Chrome 右侧面板：', error))
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === STORE_FEISHU_SNAPSHOT_MESSAGE) {
