@@ -1,8 +1,5 @@
 import {
-  COMMERCIAL_INVOICE_TEMPLATE_ID,
-  PACKING_LIST_TEMPLATE_ID,
   PROFORMA_INVOICE_TEMPLATE_ID,
-  PURCHASE_ORDER_TEMPLATE_ID,
   type DocumentKind,
   type PiItemFieldKey,
   type PiMainFieldKey,
@@ -123,122 +120,23 @@ function createItemFieldMappings(labels: Record<PiItemFieldKey, string>) {
 
 const MAIN_FIELD_MAPPINGS = createMainFieldMappings(MAIN_FIELD_LABELS)
 const ITEM_FIELD_MAPPINGS = createItemFieldMappings(ITEM_FIELD_LABELS)
-const COMMERCIAL_INVOICE_MAIN_FIELD_MAPPINGS = createMainFieldMappings(
-  COMMERCIAL_INVOICE_MAIN_FIELD_LABELS,
-)
-const COMMERCIAL_INVOICE_ITEM_FIELD_MAPPINGS = createItemFieldMappings(
-  COMMERCIAL_INVOICE_ITEM_FIELD_LABELS,
-)
-const PACKING_LIST_MAIN_FIELD_MAPPINGS = createMainFieldMappings(PACKING_LIST_MAIN_FIELD_LABELS)
-const PACKING_LIST_ITEM_FIELD_MAPPINGS = createItemFieldMappings(PACKING_LIST_ITEM_FIELD_LABELS)
 
-export const TEMPLATE_REGISTRY: PrintTemplate[] = [
-  {
-    id: PROFORMA_INVOICE_TEMPLATE_ID,
-    name: '无照片形式发票',
-    documentKind: 'proforma-invoice',
-    description: '读取多维表格主记录和关联明细，生成 A4 形式发票。',
-    status: 'ready',
-    isBuiltIn: true,
-    mainTableName: PI_MAIN_TABLE_NAME,
-    itemTableName: PI_ITEM_TABLE_NAME,
-    linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
-    rendererTemplateId: PROFORMA_INVOICE_TEMPLATE_ID,
-    mainFields: MAIN_FIELD_MAPPINGS,
-    itemFields: ITEM_FIELD_MAPPINGS,
-    printSettings: clonePrintSettings(),
-    createdAt: NOW,
-    updatedAt: NOW,
-  },
-  {
-    id: COMMERCIAL_INVOICE_TEMPLATE_ID,
-    name: '无照片商业发票',
-    documentKind: 'commercial-invoice',
-    description: '读取发票装箱单和利润核算表，生成无照片商业发票 PDF。',
-    status: 'ready',
-    isBuiltIn: true,
-    mainTableName: COMMERCIAL_INVOICE_MAIN_TABLE_NAME,
-    itemTableName: COMMERCIAL_INVOICE_ITEM_TABLE_NAME,
-    linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
-    rendererTemplateId: COMMERCIAL_INVOICE_TEMPLATE_ID,
-    mainFields: COMMERCIAL_INVOICE_MAIN_FIELD_MAPPINGS,
-    itemFields: COMMERCIAL_INVOICE_ITEM_FIELD_MAPPINGS,
-    printSettings: clonePrintSettings({
-      text: {
-        documentTitle: 'COMMERCIAL INVOICE',
-        itemHeaders: {
-          itemName: 'ITEM  NAME',
-          specification: 'SPECIFICATION',
-          quantity: 'QUANTITY',
-          unit: 'UNIT',
-          unitPrice: 'UNIT PRICE',
-          subtotal: 'SUB TOTAL',
-        },
-      },
-    }),
-    createdAt: NOW,
-    updatedAt: NOW,
-  },
-  {
-    id: PACKING_LIST_TEMPLATE_ID,
-    name: '装箱单',
-    documentKind: 'packing-list',
-    description: '读取发票装箱单和利润核算表，生成装箱单 PDF。',
-    status: 'ready',
-    isBuiltIn: true,
-    mainTableName: PACKING_LIST_MAIN_TABLE_NAME,
-    itemTableName: PACKING_LIST_ITEM_TABLE_NAME,
-    linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
-    rendererTemplateId: PACKING_LIST_TEMPLATE_ID,
-    mainFields: PACKING_LIST_MAIN_FIELD_MAPPINGS,
-    itemFields: PACKING_LIST_ITEM_FIELD_MAPPINGS,
-    printSettings: clonePrintSettings({
-      text: {
-        documentTitle: 'PACKING LIST',
-        totalLabel: 'TOTAL PACKAGES',
-        sayLabel: 'TOTAL N.W.',
-        paymentTermsLabel: 'TOTAL G.W.',
-        priceTermsLabel: 'MEAS.',
-        productionTimeLabel: 'CARTONS',
-        itemHeaders: {
-          itemName: 'ITEM  NAME',
-          specification: 'PACKING DESCRIPTION',
-          quantity: 'QUANTITY',
-          unit: 'CARTONS',
-          unitPrice: 'N.W.',
-          subtotal: 'G.W.',
-        },
-      },
-    }),
-    createdAt: NOW,
-    updatedAt: NOW,
-  },
-  {
-    id: PURCHASE_ORDER_TEMPLATE_ID,
-    name: '采购单',
-    documentKind: 'purchase-order',
-    description: '预留采购单模板，待接入供应商、采购明细和签章版式。',
-    status: 'draft',
-    isBuiltIn: true,
-    mainTableName: '采购单打印导出',
-    itemTableName: '采购单明细表',
-    linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
-    mainFields: [],
-    itemFields: [],
-    printSettings: clonePrintSettings({
-      text: {
-        documentTitle: 'PURCHASE ORDER',
-        itemHeaders: {
-          itemName: 'ITEM  NAME',
-          specification: 'SPECIFICATION',
-          quantity: 'QUANTITY',
-          unit: 'UNIT',
-          unitPrice: 'UNIT PRICE',
-          subtotal: 'AMOUNT',
-        },
-      },
-    }),
-    createdAt: NOW,
-    updatedAt: NOW,
-  },
-]
+export const DEFAULT_TEST_TEMPLATE: PrintTemplate = {
+  id: PROFORMA_INVOICE_TEMPLATE_ID,
+  name: '测试模板（形式发票）',
+  documentKind: 'proforma-invoice',
+  description: '用于测试主表、关联明细和打印窗口。正式使用请导入模板文件，或复制后绑定自己的字段。',
+  status: 'ready',
+  isBuiltIn: true,
+  mainTableName: PI_MAIN_TABLE_NAME,
+  itemTableName: PI_ITEM_TABLE_NAME,
+  linkedItemsFieldName: LINKED_ITEMS_FIELD_NAME,
+  rendererTemplateId: PROFORMA_INVOICE_TEMPLATE_ID,
+  mainFields: MAIN_FIELD_MAPPINGS,
+  itemFields: ITEM_FIELD_MAPPINGS,
+  printSettings: clonePrintSettings(),
+  createdAt: NOW,
+  updatedAt: NOW,
+}
+
+export const TEMPLATE_REGISTRY: PrintTemplate[] = [DEFAULT_TEST_TEMPLATE]

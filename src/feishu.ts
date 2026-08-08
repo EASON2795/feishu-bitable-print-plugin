@@ -9,7 +9,7 @@ import {
   MAX_PI_DOCUMENTS_PER_BATCH,
   PI_ITEM_TABLE_NAME,
   PI_MAIN_TABLE_NAME,
-  TEMPLATE_REGISTRY,
+  DEFAULT_TEST_TEMPLATE,
 } from './piConfig'
 import {
   type DataSourceSchema,
@@ -180,7 +180,7 @@ const OFFICIAL_ITEM_FIELD_ALIASES: Record<PiItemFieldKey, readonly string[]> = {
 const SELECTION_POLL_INTERVAL_MS = 1000
 
 export async function loadPiSnapshot(
-  template: PrintTemplate = TEMPLATE_REGISTRY[0],
+  template: PrintTemplate = DEFAULT_TEST_TEMPLATE,
   recordIds?: string[],
 ): Promise<PiSnapshot> {
   const tableContext = await resolveTableContext(template)

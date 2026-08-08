@@ -68,6 +68,11 @@ type DiagnosticEvent = {
   createdAt: string
 }
 
+type TemplateImportNotice = {
+  tone: 'info' | 'success' | 'error'
+  message: string
+}
+
 type RuntimeInfo = {
   href: string
   protocol: string
@@ -122,6 +127,7 @@ const ITEM_COLUMN_LABELS: Record<ItemColumnKey, string> = {
 }
 
 const MAX_DIAGNOSTIC_EVENTS = 8
+const MAX_TEMPLATE_FILE_SIZE_BYTES = 2 * 1024 * 1024
 const CHROME_SCHEMA_TIMEOUT_MS = 3000
 const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
 const FONT_OPTIONS = [
@@ -168,6 +174,7 @@ function App() {
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
   const [pendingDeleteTemplate, setPendingDeleteTemplate] = useState<PrintTemplate | null>(null)
   const [templateNotice, setTemplateNotice] = useState<string | null>(null)
+  const [templateImportNotice, setTemplateImportNotice] = useState<TemplateImportNotice | null>(null)
 
   const cancelTemplateDelete = useCallback(() => {
     setPendingDeleteTemplate(null)
@@ -213,6 +220,7 @@ function App() {
     [templates, templateWorkspace.activeTemplateId],
   )
   const activeTemplate = bridgedTemplate ?? localActiveTemplate
+  const requiresTemplateSelection = Boolean(templateWorkspace.retiredActiveTemplateId)
   activeTemplateRef.current = activeTemplate
   const previewTemplate =
     activePanel === 'templates' && editingTemplate ? editingTemplate : activeTemplate
@@ -415,7 +423,10 @@ function App() {
     () => buildPayloadForTemplate(snapshot?.payload ?? null, previewTemplate),
     [snapshot, previewTemplate],
   )
-  const templateIssues = useMemo(() => getTemplateIssues(activeTemplate), [activeTemplate])
+  const templateIssues = useMemo(
+    () => getTemplateIssues(activeTemplate, requiresTemplateSelection),
+    [activeTemplate, requiresTemplateSelection],
+  )
   const allIssues = useMemo(
     () => [...(snapshot?.issues ?? []), ...templateIssues],
     [snapshot, templateIssues],
@@ -531,6 +542,7 @@ function App() {
     const didSave = commitTemplateWorkspace({
       ...templateWorkspace,
       activeTemplateId: templateId,
+      retiredActiveTemplateId: undefined,
     })
     if (!didSave) {
       return
@@ -541,18 +553,21 @@ function App() {
   }
 
   function handleNewTemplate() {
+    setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(createBlankTemplate()))
     setActivePanel('templates')
     setIsMoreMenuOpen(false)
   }
 
   function handleCopyTemplate(template: PrintTemplate) {
+    setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(copyTemplate(template)))
     setActivePanel('templates')
     setIsMoreMenuOpen(false)
   }
 
   function handleEditTemplate(template: PrintTemplate) {
+    setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(template.isBuiltIn ? copyTemplate(template) : template))
     setActivePanel('templates')
     setIsMoreMenuOpen(false)
@@ -583,7 +598,7 @@ function App() {
   function handleDeleteTemplate(templateId: string) {
     const template = templateWorkspace.customTemplates.find((current) => current.id === templateId)
     if (!template || template.isBuiltIn) {
-      setMessage('系统内置模板不能删除；可以复制后修改自定义副本。')
+      setMessage('系统测试模板不能删除；可以复制后修改自己的副本。')
       return false
     }
 
@@ -614,7 +629,7 @@ function App() {
 
   function requestDeleteTemplate(template: PrintTemplate, trigger: HTMLButtonElement) {
     if (template.isBuiltIn) {
-      setMessage('系统内置模板不能删除；可以复制后修改自定义副本。')
+      setMessage('系统测试模板不能删除；可以复制后修改自己的副本。')
       return
     }
 
@@ -641,15 +656,35 @@ function App() {
   }
 
   async function handleImportTemplateFile(file: File) {
+    setTemplateImportNotice({ tone: 'info', message: `正在读取“${file.name}”…` })
+    setMessage(null)
+
     try {
+      if (!/\.(txt|json)$/i.test(file.name)) {
+        throw new Error('请选择旧版导出的 .txt 或 .json 模板文件。')
+      }
+      if (file.size === 0) {
+        throw new Error('模板文件是空的。')
+      }
+      if (file.size > MAX_TEMPLATE_FILE_SIZE_BYTES) {
+        throw new Error('模板文件不能超过 2 MB。')
+      }
+
       const rawText = await file.text()
       const importedTemplate = importTemplateFromText(file.name, rawText)
       setEditingTemplate(makeDesignerReadyTemplate(importedTemplate))
       setActivePanel('templates')
-      setMessage('模板已导入，请选择源数据后保存。')
+      const successMessage = `已读取“${importedTemplate.name}”并打开编辑器。请依次选择主表、明细表和关联字段，检查字段后保存；未保存前不会加入“我的模板”。`
+      setTemplateImportNotice({ tone: 'success', message: successMessage })
+      addDiagnosticEvent('info', '模板文件已导入。', `文件：${file.name}`)
     } catch (error) {
-      const nextMessage = error instanceof Error ? error.message : '模板文件解析失败。'
-      setMessage(`模板文件解析失败：${nextMessage}`)
+      const nextMessage =
+        error instanceof Error
+          ? error.message
+          : '无法读取这个模板文件，请确认它来自旧版模板导出。'
+      setActivePanel('templates')
+      setTemplateImportNotice({ tone: 'error', message: nextMessage })
+      setMessage(nextMessage)
       addDiagnosticEvent('error', '模板文件解析失败。', formatUnknownError(error))
     }
   }
@@ -692,7 +727,9 @@ function App() {
     return (
       <TemplateDesigner
         dataSourceSchema={dataSourceSchema}
-        isDataPrintAllowed={!isLoading && !isSelectionReloadPending}
+        isDataPrintAllowed={
+          !isLoading && !isSelectionReloadPending && !requiresTemplateSelection
+        }
         onCancel={() => setEditingTemplate(null)}
         onSave={(template) => void handleSaveTemplate(template)}
         pdfStatus={pdfStatus}
@@ -976,6 +1013,7 @@ function App() {
               onNewTemplate={handleNewTemplate}
               onSaveTemplate={handleSaveTemplate}
               onUseTemplate={handleUseTemplate}
+              templateImportNotice={templateImportNotice}
               templates={templates}
               dataSourceSchema={dataSourceSchema}
             />
@@ -1040,6 +1078,7 @@ function TemplateSidebar({
   search: string
   templates: PrintTemplate[]
 }) {
+  const sidebarUploadRef = useRef<HTMLInputElement>(null)
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleTemplates = normalizedSearch
     ? templates.filter((template) =>
@@ -1048,6 +1087,41 @@ function TemplateSidebar({
           .includes(normalizedSearch),
       )
     : templates
+  const visibleCustomTemplates = visibleTemplates.filter((template) => !template.isBuiltIn)
+  const visibleBuiltInTemplates = visibleTemplates.filter((template) => template.isBuiltIn)
+
+  const renderTemplateRow = (template: PrintTemplate) => (
+    <div className="template-nav-row" key={template.id}>
+      <button
+        className={
+          template.id === activeTemplateId
+            ? 'template-nav-item template-nav-item-active'
+            : 'template-nav-item'
+        }
+        onClick={() => onUseTemplate(template.id)}
+        title={`${DOCUMENT_KIND_LABELS[template.documentKind]} · ${template.name}`}
+        type="button"
+      >
+        <span className="template-nav-icon" aria-hidden="true" />
+        <span>{template.name}</span>
+      </button>
+      {template.isBuiltIn ? (
+        <span className="template-nav-protected" title="系统测试模板不可删除">
+          示例
+        </span>
+      ) : (
+        <button
+          aria-label={`删除自定义模板：${template.name}`}
+          className="template-nav-delete"
+          onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
+          title={`删除「${template.name}」`}
+          type="button"
+        >
+          删除
+        </button>
+      )}
+    </div>
+  )
 
   return (
     <aside className="template-sidebar">
@@ -1064,13 +1138,21 @@ function TemplateSidebar({
           placeholder="搜索模板"
           value={search}
         />
-        <label className="sidebar-icon-button" htmlFor="template-sidebar-upload" title="导入飞书模板">
+        <button
+          aria-label="导入模板文件"
+          className="sidebar-icon-button"
+          onClick={() => sidebarUploadRef.current?.click()}
+          title="导入模板文件"
+          type="button"
+        >
           导入
-        </label>
+        </button>
         <input
           accept=".txt,.json"
+          aria-hidden="true"
           className="visually-hidden"
-          id="template-sidebar-upload"
+          ref={sidebarUploadRef}
+          tabIndex={-1}
           type="file"
           onChange={(event) => {
             const file = event.target.files?.[0]
@@ -1085,55 +1167,32 @@ function TemplateSidebar({
       <nav className="template-nav" aria-label="模板列表">
         <section className="template-nav-section">
           <div className="template-nav-heading">
-            <span>记录模板</span>
-            <small>{visibleTemplates.length}</small>
+            <span>我的模板</span>
+            <small>{visibleCustomTemplates.length}</small>
           </div>
           <div className="template-nav-list">
-            {visibleTemplates.length ? (
-              visibleTemplates.map((template) => (
-                <div className="template-nav-row" key={template.id}>
-                  <button
-                    className={
-                      template.id === activeTemplateId
-                        ? 'template-nav-item template-nav-item-active'
-                        : 'template-nav-item'
-                    }
-                    onClick={() => onUseTemplate(template.id)}
-                    title={`${DOCUMENT_KIND_LABELS[template.documentKind]} · ${template.name}`}
-                    type="button"
-                  >
-                    <span className="template-nav-icon" aria-hidden="true" />
-                    <span>{template.name}</span>
-                  </button>
-                  {template.isBuiltIn ? (
-                    <span className="template-nav-protected" title="系统内置模板不可删除">
-                      内置
-                    </span>
-                  ) : (
-                    <button
-                      aria-label={`删除自定义模板：${template.name}`}
-                      className="template-nav-delete"
-                      onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
-                      title={`删除「${template.name}」`}
-                      type="button"
-                    >
-                      删除
-                    </button>
-                  )}
-                </div>
-              ))
+            {visibleCustomTemplates.length ? (
+              visibleCustomTemplates.map(renderTemplateRow)
             ) : (
-              <p className="template-nav-empty">没有匹配的模板。</p>
+              <p className="template-nav-empty">
+                {normalizedSearch ? '没有匹配的模板。' : '还没有自己的模板，请先导入。'}
+              </p>
             )}
           </div>
         </section>
 
         <section className="template-nav-section template-nav-section-muted">
           <div className="template-nav-heading">
-            <span>视图模板</span>
-            <small>0</small>
+            <span>系统示例</span>
+            <small>{visibleBuiltInTemplates.length}</small>
           </div>
-          <p className="template-nav-empty">暂无视图模板</p>
+          <div className="template-nav-list">
+            {visibleBuiltInTemplates.length ? (
+              visibleBuiltInTemplates.map(renderTemplateRow)
+            ) : (
+              <p className="template-nav-empty">没有匹配的系统示例。</p>
+            )}
+          </div>
         </section>
       </nav>
 
@@ -1143,7 +1202,7 @@ function TemplateSidebar({
           onClick={onNewTemplate}
           type="button"
         >
-          + 创建模板
+          + 新建空白模板
         </button>
       </div>
     </aside>
@@ -1243,6 +1302,7 @@ function TemplateConsole({
   onNewTemplate,
   onSaveTemplate,
   onUseTemplate,
+  templateImportNotice,
   templates,
 }: {
   activeTemplateId: string
@@ -1256,24 +1316,34 @@ function TemplateConsole({
   onNewTemplate: () => void
   onSaveTemplate: (template: PrintTemplate) => void
   onUseTemplate: (templateId: string) => void
+  templateImportNotice: TemplateImportNotice | null
   templates: PrintTemplate[]
 }) {
+  const templateUploadRef = useRef<HTMLInputElement>(null)
   const activeTemplate =
     templates.find((template) => template.id === activeTemplateId) ?? templates[0]
+  const customTemplates = templates.filter((template) => !template.isBuiltIn)
+  const orderedTemplates = [...customTemplates, ...templates.filter((template) => template.isBuiltIn)]
 
   return (
     <>
-      <section className="panel">
+      <section className="panel template-manager-panel">
         <div className="panel-heading-row">
-          <PanelTitle title="模板保存台" />
+          <PanelTitle title="导入与管理模板" />
           <div className="header-actions">
-            <label className="small-button file-button" htmlFor="template-upload">
-              导入飞书模板
-            </label>
+            <button
+              className="small-button file-button"
+              onClick={() => templateUploadRef.current?.click()}
+              type="button"
+            >
+              导入模板文件
+            </button>
             <input
               accept=".txt,.json"
+              aria-hidden="true"
               className="visually-hidden"
-              id="template-upload"
+              ref={templateUploadRef}
+              tabIndex={-1}
               type="file"
               onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -1284,18 +1354,50 @@ function TemplateConsole({
               }}
             />
             <button className="small-button" onClick={onNewTemplate} type="button">
-              新建
+              新建空白模板
             </button>
           </div>
         </div>
         <p className="hint-text">
-          支持飞书导出的 .txt 模板，也支持兼容的 .json 模板。导入后请选择主表、明细表和关联字段，再保存模板。
+          支持旧版飞书导出的 .txt 模板，也支持兼容的 .json 文件。文件只在当前浏览器读取，不会上传到服务器。
         </p>
         <p className="hint-text">
-          自定义模板可以删除；系统内置模板会保留，复制后可自由修改。
+          系统只保留一个测试模板。正式使用请导入自己的模板文件；导入后选择主表、明细表和关联字段，再保存模板。
         </p>
+        {templateImportNotice ? (
+          <div
+            className={`template-import-notice template-import-notice-${templateImportNotice.tone}`}
+            role={templateImportNotice.tone === 'error' ? 'alert' : 'status'}
+          >
+            {templateImportNotice.message}
+          </div>
+        ) : null}
+        {!customTemplates.length ? (
+          <div className="template-import-empty">
+            <div>
+              <strong>还没有导入自己的模板</strong>
+              <p>选择旧版导出的 .txt 或 .json 文件，绑定数据表和字段后即可保存并试打一条记录。</p>
+            </div>
+            <div className="template-import-empty-actions">
+              <button
+                className="small-button small-button-accent"
+                onClick={() => templateUploadRef.current?.click()}
+                type="button"
+              >
+                选择模板文件
+              </button>
+              <button
+                className="small-button"
+                onClick={() => onCopyTemplate(activeTemplate)}
+                type="button"
+              >
+                复制测试模板开始
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="template-list">
-          {templates.map((template) => (
+          {orderedTemplates.map((template) => (
             <div
               className={
                 template.id === activeTemplateId ? 'template-row template-row-active' : 'template-row'
@@ -1312,7 +1414,7 @@ function TemplateConsole({
                 </div>
                 <p>
                   {DOCUMENT_KIND_LABELS[template.documentKind]} ·{' '}
-                  {template.isBuiltIn ? '内置模板' : '自定义模板'}
+                  {template.isBuiltIn ? '系统测试模板' : '自定义模板'}
                 </p>
                 <p>{template.mainTableName || '未设置主表'}</p>
               </div>
@@ -1336,8 +1438,8 @@ function TemplateConsole({
                     删除
                   </button>
                 ) : (
-                  <button className="protected-button" disabled title="系统内置模板不可删除" type="button">
-                    系统保留
+                  <button className="protected-button" disabled title="系统测试模板不可删除" type="button">
+                    测试模板
                   </button>
                 )}
               </div>
@@ -1467,6 +1569,7 @@ function TemplateDesigner({
   const [draft, setDraft] = useState(template)
   const [selected, setSelected] = useState<DesignerSelection | null>(null)
   const [busyAction, setBusyAction] = useState<'workspace' | null>(null)
+  const designerHeadingRef = useRef<HTMLHeadingElement>(null)
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const [designerNotice, setDesignerNotice] = useState<string | null>(null)
   const [isDesignerLeftCollapsed, setIsDesignerLeftCollapsed] = useState(false)
@@ -1502,6 +1605,10 @@ function TemplateDesigner({
   const canRenderPdf =
     isDataPrintAllowed && Boolean(previewPayload) && pdfStatus === 'online' && !busyAction
   const isDesignerFocusMode = isDesignerLeftCollapsed && isDesignerRightCollapsed
+
+  useEffect(() => {
+    designerHeadingRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     setDraft(template)
@@ -1790,7 +1897,9 @@ function TemplateDesigner({
       <header className="designer-topbar">
         <div>
           <p className="eyebrow">Template Designer</p>
-          <h1>{draft.name}</h1>
+          <h1 ref={designerHeadingRef} tabIndex={-1}>
+            {draft.name}
+          </h1>
         </div>
         <div className="designer-topbar-actions">
           <button
@@ -3129,7 +3238,21 @@ function buildPayloadForTemplate(
   }
 }
 
-function getTemplateIssues(template: PrintTemplate): ValidationIssue[] {
+function getTemplateIssues(
+  template: PrintTemplate,
+  requiresTemplateSelection = false,
+): ValidationIssue[] {
+  if (requiresTemplateSelection) {
+    return [
+      {
+        severity: 'blocker',
+        code: 'template-selection-required',
+        message:
+          '你之前使用的内置模板已从列表精简。请到“模板管理”导入旧版模板文件，或明确选择系统测试模板后再打印。',
+      },
+    ]
+  }
+
   if (template.status === 'ready' && template.rendererTemplateId) {
     return []
   }

@@ -1,19 +1,26 @@
-import { LINKED_ITEMS_FIELD_NAME, TEMPLATE_REGISTRY } from './piConfig'
+import { DEFAULT_TEST_TEMPLATE, LINKED_ITEMS_FIELD_NAME, TEMPLATE_REGISTRY } from './piConfig'
 import { clonePrintSettings } from './templateDefaults'
 import {
   COMMERCIAL_INVOICE_TEMPLATE_ID,
   OFFICIAL_LAYOUT_TEMPLATE_ID,
   PACKING_LIST_TEMPLATE_ID,
   PROFORMA_INVOICE_TEMPLATE_ID,
+  PURCHASE_ORDER_TEMPLATE_ID,
   type DocumentKind,
   type PrintTemplate,
 } from './types'
 
 const STORAGE_KEY = 'feishu-bitable-print-template-workspace-v1'
+const RETIRED_BUILT_IN_TEMPLATE_IDS = new Set<string>([
+  COMMERCIAL_INVOICE_TEMPLATE_ID,
+  PACKING_LIST_TEMPLATE_ID,
+  PURCHASE_ORDER_TEMPLATE_ID,
+])
 
 export type TemplateWorkspace = {
   activeTemplateId: string
   customTemplates: PrintTemplate[]
+  retiredActiveTemplateId?: string
 }
 
 type StoredWorkspace = Partial<TemplateWorkspace>
@@ -31,14 +38,26 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
     const customTemplates = Array.isArray(parsed.customTemplates)
       ? parsed.customTemplates.filter(isCustomTemplate).map(hydrateTemplate)
       : []
-    const activeTemplateId =
-      typeof parsed.activeTemplateId === 'string' && findTemplate(parsed.activeTemplateId, customTemplates)
-        ? parsed.activeTemplateId
-        : fallback.activeTemplateId
+    const storedActiveTemplateId =
+      typeof parsed.activeTemplateId === 'string' ? parsed.activeTemplateId : ''
+    const hasStoredTemplate = Boolean(
+      storedActiveTemplateId && findTemplate(storedActiveTemplateId, customTemplates),
+    )
+    const storedRetiredActiveTemplateId =
+      typeof parsed.retiredActiveTemplateId === 'string' &&
+      RETIRED_BUILT_IN_TEMPLATE_IDS.has(parsed.retiredActiveTemplateId)
+        ? parsed.retiredActiveTemplateId
+        : undefined
+    const retiredActiveTemplateId =
+      storedRetiredActiveTemplateId ??
+      (!hasStoredTemplate && RETIRED_BUILT_IN_TEMPLATE_IDS.has(storedActiveTemplateId)
+        ? storedActiveTemplateId
+        : undefined)
 
     return {
-      activeTemplateId,
+      activeTemplateId: hasStoredTemplate ? storedActiveTemplateId : fallback.activeTemplateId,
       customTemplates,
+      retiredActiveTemplateId,
     }
   } catch {
     return fallback
@@ -51,6 +70,7 @@ export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
     JSON.stringify({
       activeTemplateId: workspace.activeTemplateId,
       customTemplates: workspace.customTemplates,
+      retiredActiveTemplateId: workspace.retiredActiveTemplateId,
     }),
   )
 }
@@ -67,10 +87,11 @@ export function removeCustomTemplate(
   const customTemplates = workspace.customTemplates.filter((current) => current.id !== templateId)
   const activeTemplateId =
     workspace.activeTemplateId === templateId
-      ? TEMPLATE_REGISTRY[0].id
+      ? DEFAULT_TEST_TEMPLATE.id
       : workspace.activeTemplateId
 
   return {
+    ...workspace,
     activeTemplateId,
     customTemplates,
   }
@@ -162,7 +183,7 @@ function hydrateTemplate(template: PrintTemplate): PrintTemplate {
 
 function createFallbackWorkspace(): TemplateWorkspace {
   return {
-    activeTemplateId: TEMPLATE_REGISTRY[0].id,
+    activeTemplateId: DEFAULT_TEST_TEMPLATE.id,
     customTemplates: [],
   }
 }

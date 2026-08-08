@@ -103,6 +103,11 @@
   background: #eaf0ff;
 }
 
+.sidebar-icon-button:focus-visible {
+  outline: 2px solid rgba(22, 100, 255, 0.32);
+  outline-offset: 2px;
+}
+
 .template-nav {
   min-height: 0;
   overflow: auto;
@@ -591,6 +596,60 @@
   display: grid;
   gap: 9px;
   margin-top: 12px;
+}
+
+.template-import-notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #c8d4df;
+  border-radius: 8px;
+  color: #34444d;
+  background: #f5f8fb;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.template-import-notice-success {
+  color: #0c4d39;
+  border-color: #8ac9b3;
+  background: #effbf5;
+}
+
+.template-import-notice-error {
+  color: #8b2c25;
+  border-color: #e5aca6;
+  background: #fff3f1;
+}
+
+.template-import-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px dashed #9fb4c6;
+  border-radius: 9px;
+  background: #f7fafc;
+}
+
+.template-import-empty strong {
+  color: #17262e;
+  font-size: 14px;
+}
+
+.template-import-empty p {
+  margin: 5px 0 0;
+  color: #63727c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.template-import-empty-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
 }
 
 .template-row {
@@ -1897,6 +1956,36 @@
   .app-shell-panel-collapsed .template-management-stage {
     height: calc(100vh - 210px);
     padding: 12px;
+  }
+
+  .template-manager-panel .panel-heading-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .template-manager-panel .header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .template-manager-panel .header-actions .small-button {
+    width: 100%;
+    min-height: 40px;
+  }
+
+  .template-import-empty {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .template-import-empty-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .template-import-empty-actions .small-button {
+    width: 100%;
+    min-height: 40px;
   }
 
   .template-row-actions {

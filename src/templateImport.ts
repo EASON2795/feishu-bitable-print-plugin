@@ -1,4 +1,4 @@
-import { TEMPLATE_REGISTRY } from './piConfig'
+import { DEFAULT_TEST_TEMPLATE } from './piConfig'
 import { clonePrintSettings } from './templateDefaults'
 import {
   OFFICIAL_LAYOUT_TEMPLATE_ID,
@@ -19,7 +19,7 @@ const ITEM_KEYS: ItemColumnKey[] = [
 
 type OfficialTemplateExport = {
   name?: string
-  content?: string
+  content: string
 }
 
 type OfficialTemplateContent = {
@@ -82,8 +82,8 @@ type OfficialDynamicRow = {
 
 export function importTemplateFromText(fileName: string, rawText: string): PrintTemplate {
   const exported = parseOfficialExport(rawText)
-  const content = exported.content ? (JSON.parse(exported.content) as OfficialTemplateContent) : null
-  const base = TEMPLATE_REGISTRY[0]
+  const content = parseOfficialContent(exported.content)
+  const base = DEFAULT_TEST_TEMPLATE
   const settings = clonePrintSettings(base.printSettings)
   const pages = content?.document?.pages ?? []
   const blocks = pages.flatMap((page) =>
@@ -146,21 +146,18 @@ export function importTemplateFromText(fileName: string, rawText: string): Print
 
   const now = new Date().toISOString()
   const title = exported.name || fileName.replace(/\.[^.]+$/, '') || '上传模板'
-  const officialTemplate = content
-    ? buildOfficialTemplateSummary(title, content as Record<string, unknown>)
-    : undefined
-  const mainFields = officialTemplate?.mainFieldRefs.map((fieldRef) => ({
+  const officialTemplate = buildOfficialTemplateSummary(title, content as Record<string, unknown>)
+  const mainFields = officialTemplate.mainFieldRefs.map((fieldRef) => ({
     key: fieldRef,
     label: getLeafFieldName(fieldRef),
     required: true,
   }))
-  const itemFields = officialTemplate?.itemFieldRefs.map((fieldRef) => ({
+  const itemFields = officialTemplate.itemFieldRefs.map((fieldRef) => ({
     key: fieldRef,
     label: getLeafFieldName(fieldRef),
     required: true,
   }))
-  const linkedItemsFieldName = officialTemplate?.dynamicRoots[0] || base.linkedItemsFieldName
-  const isOfficialTemplateReady = Boolean(officialTemplate)
+  const linkedItemsFieldName = officialTemplate.dynamicRoots[0] || base.linkedItemsFieldName
 
   return {
     ...base,
@@ -170,9 +167,9 @@ export function importTemplateFromText(fileName: string, rawText: string): Print
     description: `从文件 ${fileName} 导入。`,
     status: 'draft',
     isBuiltIn: false,
-    mainTableName: isOfficialTemplateReady ? '' : base.mainTableName,
-    itemTableName: isOfficialTemplateReady ? '' : base.itemTableName,
-    rendererTemplateId: isOfficialTemplateReady ? OFFICIAL_LAYOUT_TEMPLATE_ID : base.rendererTemplateId,
+    mainTableName: '',
+    itemTableName: '',
+    rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
     sourceFile: fileName,
     officialTemplate,
     linkedItemsFieldName,
@@ -186,17 +183,73 @@ export function importTemplateFromText(fileName: string, rawText: string): Print
 
 function parseOfficialExport(rawText: string): OfficialTemplateExport {
   const trimmed = rawText.trim()
-  try {
-    return JSON.parse(trimmed) as OfficialTemplateExport
-  } catch {
-    return JSON.parse(decodeBase64(trimmed)) as OfficialTemplateExport
+  if (!trimmed) {
+    throw new Error('模板文件是空的。')
   }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    try {
+      parsed = JSON.parse(decodeBase64(trimmed))
+    } catch {
+      throw new Error('不是受支持的飞书旧版排版模板。')
+    }
+  }
+
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.content !== 'string' ||
+    !parsed.content.trim() ||
+    (parsed.name !== undefined && typeof parsed.name !== 'string')
+  ) {
+    throw new Error('不是受支持的飞书旧版排版模板。')
+  }
+
+  return {
+    name: parsed.name as string | undefined,
+    content: parsed.content,
+  }
+}
+
+function parseOfficialContent(rawContent: string): OfficialTemplateContent {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawContent)
+  } catch {
+    throw new Error('模板内容已经损坏，无法读取。')
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error('模板内容不是有效的排版结构。')
+  }
+
+  const content = parsed as OfficialTemplateContent
+  const pages = content.document?.pages
+  const hasLayoutBlocks =
+    Array.isArray(pages) &&
+    pages.some((page) =>
+      (page.rows ?? []).some((row) =>
+        (row.columns ?? []).some((column) => (column.blocks?.length ?? 0) > 0),
+      ),
+    )
+
+  if (!hasLayoutBlocks) {
+    throw new Error('模板中没有可识别的页面排版内容。')
+  }
+
+  return content
 }
 
 function decodeBase64(value: string): string {
   const binary = window.atob(value)
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
   return new TextDecoder().decode(bytes)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function blockText(block: OfficialBlock): string {
@@ -314,19 +367,28 @@ function getLeafFieldName(fieldRef: string): string {
 }
 
 function walkObject(value: unknown, callback: (node: Record<string, unknown>) => void) {
-  if (!value || typeof value !== 'object') {
-    return
-  }
+  const stack: { depth: number; value: unknown }[] = [{ depth: 0, value }]
+  let visitedNodes = 0
 
-  if (!Array.isArray(value)) {
-    callback(value as Record<string, unknown>)
-  }
-
-  Object.values(value).forEach((child) => {
-    if (Array.isArray(child)) {
-      child.forEach((item) => walkObject(item, callback))
-    } else {
-      walkObject(child, callback)
+  while (stack.length) {
+    const current = stack.pop()
+    if (!current || !current.value || typeof current.value !== 'object') {
+      continue
     }
-  })
+
+    visitedNodes += 1
+    if (visitedNodes > 50_000 || current.depth > 80) {
+      throw new Error('模板结构过大或嵌套过深，无法安全导入。')
+    }
+
+    if (!Array.isArray(current.value)) {
+      callback(current.value as Record<string, unknown>)
+    }
+
+    Object.values(current.value).forEach((child) => {
+      if (child && typeof child === 'object') {
+        stack.push({ depth: current.depth + 1, value: child })
+      }
+    })
+  }
 }
