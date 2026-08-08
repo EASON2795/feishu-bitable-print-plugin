@@ -1291,7 +1291,13 @@ function TemplateSidebar({
 
   return (
     <aside className="template-sidebar">
-      <button className="template-sidebar-collapse" onClick={onCollapse} title="隐藏模板栏" type="button">
+      <button
+        aria-label="隐藏模板栏"
+        className="template-sidebar-collapse"
+        onClick={onCollapse}
+        title="隐藏模板栏"
+        type="button"
+      >
         ‹
       </button>
       <div className="template-sidebar-search">
@@ -1303,30 +1309,6 @@ function TemplateSidebar({
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="搜索模板"
           value={search}
-        />
-        <button
-          aria-label="导入模板文件"
-          className="sidebar-icon-button"
-          onClick={() => sidebarUploadRef.current?.click()}
-          title="导入模板文件"
-          type="button"
-        >
-          导入
-        </button>
-        <input
-          accept=".txt,.json"
-          aria-hidden="true"
-          className="visually-hidden"
-          ref={sidebarUploadRef}
-          tabIndex={-1}
-          type="file"
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) {
-              onImportTemplateFile(file)
-            }
-            event.currentTarget.value = ''
-          }}
         />
       </div>
 
@@ -1362,7 +1344,28 @@ function TemplateSidebar({
         </section>
       </nav>
 
-      <div className="template-sidebar-footer">
+      <div className="template-sidebar-footer" role="group" aria-label="模板操作">
+        <button
+          className="sidebar-import-button"
+          onClick={() => sidebarUploadRef.current?.click()}
+          title="导入旧版 .txt 或 .json 模板文件"
+          type="button"
+        >
+          导入旧模板
+        </button>
+        <input
+          accept=".txt,.json"
+          hidden
+          ref={sidebarUploadRef}
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            if (file) {
+              onImportTemplateFile(file)
+            }
+            event.currentTarget.value = ''
+          }}
+        />
         <button
           className={activePanel === 'templates' ? 'sidebar-create-button sidebar-create-button-muted' : 'sidebar-create-button'}
           onClick={onNewTemplate}
