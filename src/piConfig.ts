@@ -125,7 +125,7 @@ export const DEFAULT_TEST_TEMPLATE: PrintTemplate = {
   id: PROFORMA_INVOICE_TEMPLATE_ID,
   name: '测试模板（形式发票）',
   documentKind: 'proforma-invoice',
-  description: '用于测试主表、关联明细和打印窗口。正式使用请导入模板文件，或复制后绑定自己的字段。',
+  description: '用于测试主表、关联明细和打印效果。正式使用请导入模板文件，或复制后绑定自己的字段。',
   status: 'ready',
   isBuiltIn: true,
   mainTableName: PI_MAIN_TABLE_NAME,

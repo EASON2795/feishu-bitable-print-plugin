@@ -20,7 +20,7 @@
     "bitable",
     "base",
     "print",
-    "print-workspace",
+    "direct-print",
     "invoice"
   ],
   "engines": {

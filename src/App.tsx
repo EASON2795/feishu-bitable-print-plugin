@@ -15,7 +15,7 @@ import { DEFAULT_TEST_TEMPLATE, DOCUMENT_KIND_LABELS } from './piConfig'
 import {
   checkLocalPrint,
   getPrintRuntimeLabel,
-  openPrintWorkspace,
+  printDirectly,
 } from './localPrint'
 import { buildPrintDocument } from './printDocument'
 import {
@@ -151,7 +151,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
-  const [busyAction, setBusyAction] = useState<'workspace' | null>(null)
+  const [busyAction, setBusyAction] = useState<'print' | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
@@ -525,27 +525,27 @@ function App() {
     !busyAction
   const canPickRecords = !isChromeExtension && Boolean(snapshot) && !isLoading && !wrongTableIssue
 
-  async function handleOpenPrintWorkspace() {
+  async function handlePrint() {
     if (!printPayload || !canRenderPdf) {
       return
     }
 
-    await runPdfAction('workspace', async () => {
-      await openPrintWorkspace(printPayload)
-      await notifyHost('独立打印窗口已打开；可以调整窗口大小后再打印或另存 PDF。')
+    await runPdfAction('print', async () => {
+      void notifyHost('正在打开系统打印对话框。')
+      await printDirectly(printPayload)
     })
   }
 
-  async function runPdfAction(label: 'workspace', action: () => Promise<void>) {
+  async function runPdfAction(label: 'print', action: () => Promise<void>) {
     setBusyAction(label)
     setMessage(null)
 
     try {
       await action()
     } catch (actionError) {
-      const nextMessage = actionError instanceof Error ? actionError.message : 'PDF 操作失败。'
+      const nextMessage = actionError instanceof Error ? actionError.message : '打印失败。'
       setMessage(nextMessage)
-      addDiagnosticEvent('error', 'PDF 操作失败。', formatUnknownError(actionError))
+      addDiagnosticEvent('error', '打印失败。', formatUnknownError(actionError))
       await notifyHost(nextMessage)
     } finally {
       setBusyAction(null)
@@ -1079,12 +1079,12 @@ function App() {
             </button>
             <button
               className="toolbar-button toolbar-button-primary"
-              onClick={() => void handleOpenPrintWorkspace()}
+              onClick={() => void handlePrint()}
               disabled={!canRenderPdf}
-              title="在独立窗口中可打印或选择“另存为 PDF”"
+              title="直接打开系统打印，可选择打印机或“另存为 PDF”"
               type="button"
             >
-              {busyAction === 'workspace' ? '打开中' : '在新窗口打印'}
+              {busyAction === 'print' ? '准备打印…' : '打印'}
             </button>
           </div>
         </header>
@@ -1703,7 +1703,7 @@ function TemplateDeleteDialog({
           将永久删除“{template.name}”及其排版设置。此操作无法撤销。
         </p>
         <p className="template-delete-note">
-          已经打开的打印窗口是本次快照，如不再需要请一并关闭。
+          已经开始的打印使用点击时的单据快照，不受本次删除影响。
         </p>
         <div className="template-delete-actions">
           <button ref={cancelButtonRef} onClick={onCancel} type="button">
@@ -1739,7 +1739,7 @@ function TemplateDesigner({
 }) {
   const [draft, setDraft] = useState(template)
   const [selected, setSelected] = useState<DesignerSelection | null>(null)
-  const [busyAction, setBusyAction] = useState<'workspace' | null>(null)
+  const [busyAction, setBusyAction] = useState<'print' | null>(null)
   const designerHeadingRef = useRef<HTMLHeadingElement>(null)
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const [designerNotice, setDesignerNotice] = useState<string | null>(null)
@@ -2040,21 +2040,22 @@ function TemplateDesigner({
     })
   }
 
-  async function openDesignerPrintWorkspace() {
+  async function printDesignerDocument() {
     if (!previewPayload || !canRenderPdf) {
       return
     }
 
-    setBusyAction('workspace')
+    setBusyAction('print')
     try {
-      await openPrintWorkspace({
+      void notifyHost('正在打开系统打印对话框。')
+      await printDirectly({
         ...previewPayload,
         designMode: false,
         selectedDesignId: undefined,
       })
-      await notifyHost('独立打印窗口已打开。')
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'PDF 操作失败。'
+      const message = error instanceof Error ? error.message : '打印失败。'
+      setDesignerNotice(message)
       await notifyHost(message)
     } finally {
       setBusyAction(null)
@@ -2120,19 +2121,19 @@ function TemplateDesigner({
           <button
             className="small-button small-button-accent"
             disabled={!canRenderPdf}
-            onClick={() => void openDesignerPrintWorkspace()}
+            onClick={() => void printDesignerDocument()}
             title={
               missingDataSourceBindings.length
                 ? '请先设置主表、明细表和关联字段'
                 : !isTemplateActive || hasUnsavedTemplateChanges
                   ? '请先保存并使用模板，再读取当前记录'
                 : hasMatchingOfficialSnapshot
-                  ? '在独立窗口中可打印或选择“另存为 PDF”'
+                  ? '直接打开系统打印，可选择打印机或“另存为 PDF”'
                   : '请先保存模板并在飞书表格中选择记录'
             }
             type="button"
           >
-            {busyAction === 'workspace' ? '打开中' : '在新窗口打印'}
+            {busyAction === 'print' ? '准备打印…' : '打印'}
           </button>
           <button className="small-button" onClick={() => onSave(draft)} type="button">
             {missingDataSourceBindings.length ? '保存草稿' : '保存并使用'}
@@ -2230,7 +2231,11 @@ function TemplateDesigner({
               onFieldClick={handleFieldClick}
               onFieldDragStart={handleFieldDragStart}
             />
-            {designerNotice ? <p className="designer-notice">{designerNotice}</p> : null}
+            {designerNotice ? (
+              <p aria-live="polite" className="designer-notice" role="status">
+                {designerNotice}
+              </p>
+            ) : null}
           </section>
 
           <section className="designer-section">

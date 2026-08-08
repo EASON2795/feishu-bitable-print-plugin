@@ -1,8 +1,8 @@
 import { buildPdfFileName, buildPrintDocument } from './printDocument'
 import type { PiPrintPayload } from './types'
 
-const PRINT_WORKSPACE_SESSION_ID = createPrintWorkspaceSessionId()
-const PRINT_WORKSPACE_NAME = `feishu-bitable-print-workspace-${PRINT_WORKSPACE_SESSION_ID}`
+const DIRECT_PRINT_SESSION_ID = createDirectPrintSessionId()
+const DIRECT_PRINT_WINDOW_NAME = `feishu-bitable-direct-print-${DIRECT_PRINT_SESSION_ID}`
 const PRINT_ASSET_WAIT_TIMEOUT_MS = 5000
 
 export function getPrintRuntimeLabel(): string {
@@ -13,32 +13,56 @@ export async function checkLocalPrint(): Promise<boolean> {
   return typeof window !== 'undefined' && typeof window.print === 'function'
 }
 
-export async function openPrintWorkspace(payload: PiPrintPayload): Promise<void> {
+export async function printDirectly(payload: PiPrintPayload): Promise<void> {
   const printWindow = window.open(
     '',
-    PRINT_WORKSPACE_NAME,
+    DIRECT_PRINT_WINDOW_NAME,
     'popup=yes,width=1180,height=880,resizable=yes,scrollbars=yes',
   )
   if (!printWindow) {
-    throw new Error('浏览器拦截了独立打印窗口，请允许弹出窗口后重试。')
+    throw new Error('浏览器阻止了打印，请允许弹出式窗口后重试。')
   }
-
-  printWindow.document.open()
-  printWindow.document.write(buildPrintWorkspaceDocument(payload))
-  printWindow.document.close()
-  wirePrintWorkspaceControls(printWindow)
 
   try {
-    printWindow.opener = null
-  } catch {
-    // Some embedded hosts expose a read-only opener. The window remains usable without this hardening.
-  }
+    printWindow.document.open()
+    printWindow.document.write(buildDirectPrintDocument(payload))
+    printWindow.document.close()
+    const enableManualPrint = wireDirectPrintControls(printWindow)
 
-  await waitForPrintAssets(printWindow)
-  printWindow.focus()
+    try {
+      printWindow.opener = null
+    } catch {
+      // Some embedded hosts expose a read-only opener. Printing still works without this hardening.
+    }
+
+    await waitForPrintAssets(printWindow)
+    if (printWindow.closed) {
+      return
+    }
+
+    printWindow.addEventListener(
+      'afterprint',
+      () => {
+        window.setTimeout(() => {
+          if (!printWindow.closed) {
+            printWindow.close()
+          }
+        }, 0)
+      },
+      { once: true },
+    )
+    enableManualPrint()
+    printWindow.focus()
+    printWindow.print()
+  } catch (error) {
+    if (!printWindow.closed) {
+      printWindow.close()
+    }
+    throw error
+  }
 }
 
-function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
+function buildDirectPrintDocument(payload: PiPrintPayload): string {
   const documentHtml = buildPrintDocument({
     ...payload,
     designMode: false,
@@ -48,7 +72,7 @@ function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
   const documentCount = payload.documents.length
   const itemCount = payload.documents.reduce((total, document) => total + document.items.length, 0)
   const toolbarStyles = `
-    .print-workspace-toolbar {
+    .direct-print-toolbar {
       position: sticky;
       top: 0;
       z-index: 2147483647;
@@ -66,12 +90,12 @@ function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
       box-sizing: border-box;
       backdrop-filter: blur(12px);
     }
-    .print-workspace-summary {
+    .direct-print-summary {
       min-width: 0;
       display: grid;
       gap: 3px;
     }
-    .print-workspace-summary strong {
+    .direct-print-summary strong {
       overflow: hidden;
       color: #17262e;
       font-size: 14px;
@@ -79,17 +103,17 @@ function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .print-workspace-summary span {
+    .direct-print-summary span {
       color: #667585;
       font-size: 12px;
       line-height: 1.45;
     }
-    .print-workspace-actions {
+    .direct-print-actions {
       display: flex;
       flex: 0 0 auto;
       gap: 8px;
     }
-    .print-workspace-actions button {
+    .direct-print-actions button {
       min-height: 36px;
       padding: 0 14px;
       border: 1px solid #b9c7d5;
@@ -99,42 +123,48 @@ function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
       font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       cursor: pointer;
     }
-    .print-workspace-actions button:hover {
+    .direct-print-actions button:hover {
       border-color: #6e879c;
       background: #f4f8fb;
     }
-    .print-workspace-actions button:focus-visible {
+    .direct-print-actions button:disabled {
+      border-color: #cbd5df;
+      color: #7b8794;
+      background: #eef2f6;
+      cursor: wait;
+    }
+    .direct-print-actions button:focus-visible {
       outline: 3px solid rgba(29, 92, 255, 0.28);
       outline-offset: 2px;
     }
-    .print-workspace-actions .print-workspace-primary {
+    .direct-print-actions .direct-print-primary {
       border-color: #155eef;
       color: #ffffff;
       background: #155eef;
     }
     @media (max-width: 680px) {
-      .print-workspace-toolbar {
+      .direct-print-toolbar {
         align-items: stretch;
         flex-direction: column;
       }
-      .print-workspace-actions button {
+      .direct-print-actions button {
         flex: 1 1 0;
       }
     }
     @media print {
-      .print-workspace-toolbar {
+      .direct-print-toolbar {
         display: none !important;
       }
     }
   `
-  const toolbarMarkup = `<header class="print-workspace-toolbar">
-    <div class="print-workspace-summary">
+  const toolbarMarkup = `<header class="direct-print-toolbar">
+    <div class="direct-print-summary">
       <strong>${escapeHtml(title)}</strong>
-      <span>本次快照 · ${documentCount} 条单据 · ${itemCount} 行明细 · 数据仅保留在此窗口</span>
+      <span id="direct-print-status" role="status">正在准备字体和图片，完成后会自动打开系统打印 · ${documentCount} 条单据 · ${itemCount} 行明细</span>
     </div>
-    <div class="print-workspace-actions">
-      <button id="print-workspace-close" type="button">关闭窗口</button>
-      <button class="print-workspace-primary" id="print-workspace-print" type="button">打印 / 另存 PDF</button>
+    <div class="direct-print-actions">
+      <button id="direct-print-close" type="button">关闭</button>
+      <button class="direct-print-primary" disabled id="direct-print-retry" type="button">正在准备…</button>
     </div>
   </header>`
 
@@ -143,15 +173,22 @@ function buildPrintWorkspaceDocument(payload: PiPrintPayload): string {
     .replace(/<body([^>]*)>/, `<body$1>${toolbarMarkup}`)
 }
 
-function wirePrintWorkspaceControls(target: Window): void {
-  const closeButton = target.document.getElementById('print-workspace-close')
-  const printButton = target.document.getElementById('print-workspace-print')
-  if (!closeButton || !printButton) {
-    throw new Error('独立打印窗口初始化失败，请关闭窗口后重试。')
+function wireDirectPrintControls(target: Window): () => void {
+  const closeButton = target.document.getElementById('direct-print-close')
+  const printButton = target.document.getElementById('direct-print-retry') as HTMLButtonElement | null
+  const status = target.document.getElementById('direct-print-status')
+  if (!closeButton || !printButton || !status) {
+    throw new Error('临时打印页初始化失败，请关闭后重试。')
   }
 
   closeButton.addEventListener('click', () => target.close())
   printButton.addEventListener('click', () => target.print())
+
+  return () => {
+    status.textContent = '系统打印没有自动出现？请点击页面上的“打印”按钮。'
+    printButton.disabled = false
+    printButton.textContent = '打印 / 另存 PDF'
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -193,7 +230,7 @@ async function waitForPrintAssetsToSettle(target: Window): Promise<void> {
   )
 }
 
-function createPrintWorkspaceSessionId(): string {
+function createDirectPrintSessionId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }
