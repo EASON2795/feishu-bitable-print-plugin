@@ -112,7 +112,10 @@ type DesignerInlineNode = {
 
 export function makeDesignerReadyTemplate(template: PrintTemplate): PrintTemplate {
   if (template.officialTemplate) {
-    return template
+    return {
+      ...template,
+      rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
+    }
   }
 
   const mainFields = template.mainFields.length ? template.mainFields : createDefaultMainFields()

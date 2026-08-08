@@ -30,6 +30,7 @@ export type DataSourceFieldOption = {
   id: string
   name: string
   type: string
+  linkedTableId?: string
 }
 
 export type DataSourceTableOption = {
@@ -40,6 +41,7 @@ export type DataSourceTableOption = {
 
 export type DataSourceSchema = {
   source: 'feishu' | 'mock' | 'local'
+  activeTableName?: string
   tables: DataSourceTableOption[]
 }
 

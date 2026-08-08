@@ -11,7 +11,7 @@ import {
 } from '@runtime-host'
 import { getMockPiSnapshot } from './mockData'
 import { importDataFile } from './dataImport'
-import { DOCUMENT_KIND_LABELS } from './piConfig'
+import { DEFAULT_TEST_TEMPLATE, DOCUMENT_KIND_LABELS } from './piConfig'
 import {
   checkLocalPrint,
   getPrintRuntimeLabel,
@@ -130,6 +130,7 @@ const MAX_DIAGNOSTIC_EVENTS = 8
 const MAX_TEMPLATE_FILE_SIZE_BYTES = 2 * 1024 * 1024
 const CHROME_SCHEMA_TIMEOUT_MS = 3000
 const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
+const DATA_SOURCE_CONFIRMATION_LABEL = '当前 Base 数据源确认'
 const FONT_OPTIONS = [
   { label: '默认字体', value: '' },
   { label: 'Arial', value: 'Arial, sans-serif' },
@@ -154,6 +155,7 @@ function App() {
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
+  const [hasResolvedDataSourceSchema, setHasResolvedDataSourceSchema] = useState(false)
   const [activePanel, setActivePanel] = useState<ActivePanel>('print')
   const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 860,
@@ -221,6 +223,10 @@ function App() {
   )
   const activeTemplate = bridgedTemplate ?? localActiveTemplate
   const requiresTemplateSelection = Boolean(templateWorkspace.retiredActiveTemplateId)
+  const trustedDataSourceSchema =
+    dataSourceSchema && (dataSourceSchema.source === 'feishu' || shouldUseDemoData())
+      ? dataSourceSchema
+      : null
   activeTemplateRef.current = activeTemplate
   const previewTemplate =
     activePanel === 'templates' && editingTemplate ? editingTemplate : activeTemplate
@@ -271,6 +277,7 @@ function App() {
           return
         }
         setDataSourceSchema(nextSchema)
+        setHasResolvedDataSourceSchema(true)
         setBridgedTemplate(nextTemplate)
       }
       if (selectionReloadToken === selectionReloadTokenRef.current) {
@@ -291,6 +298,10 @@ function App() {
       const fallbackMessage =
         hostError instanceof Error ? hostError.message : '无法连接飞书插件容器。'
       setMessage(fallbackMessage)
+      if (selectionReloadToken === selectionReloadTokenRef.current) {
+        selectionReloadPendingRef.current = false
+        setIsSelectionReloadPending(false)
+      }
       if (shouldUseDemoData()) {
         setSnapshot(getMockPiSnapshot(fallbackMessage))
         addDiagnosticEvent('warning', '未连接飞书，已进入明确启用的演示模式。', formatUnknownError(hostError))
@@ -333,6 +344,7 @@ function App() {
         const schema = await withTimeout(loadDataSourceSchema(), FEISHU_SCHEMA_TIMEOUT_MS)
         if (isMounted) {
           setDataSourceSchema(schema)
+          setHasResolvedDataSourceSchema(true)
           addDiagnosticEvent(
             schema.source === 'feishu' ? 'info' : 'warning',
             schema.source === 'feishu' ? '飞书字段结构读取完成。' : '飞书字段结构读取失败，已使用样例结构。',
@@ -344,9 +356,11 @@ function App() {
           if (shouldUseDemoData()) {
             const fallbackSchema = getMockDataSourceSchema()
             setDataSourceSchema(fallbackSchema)
+            setHasResolvedDataSourceSchema(true)
             addDiagnosticEvent('warning', '演示模式已使用样例字段结构。', formatUnknownError(error))
           } else {
             setDataSourceSchema(null)
+            setHasResolvedDataSourceSchema(true)
             addDiagnosticEvent('error', '字段结构读取失败。', formatUnknownError(error))
           }
         }
@@ -359,6 +373,52 @@ function App() {
       isMounted = false
     }
   }, [addDiagnosticEvent, isChromeExtension])
+
+  useEffect(() => {
+    const recoveredTemplateIds = templateWorkspace.recoveredOfficialRendererTemplateIds
+    if (!hasResolvedDataSourceSchema || !recoveredTemplateIds?.length) {
+      return
+    }
+
+    const recoveredIdSet = new Set(recoveredTemplateIds)
+    const customTemplates = templateWorkspace.customTemplates.map((template) =>
+      recoveredIdSet.has(template.id)
+        ? suggestImportedTemplateBindings(
+            template,
+            trustedDataSourceSchema,
+            undefined,
+            DEFAULT_TEST_TEMPLATE,
+          )
+        : template,
+    )
+    const nextWorkspace: TemplateWorkspace = {
+      ...templateWorkspace,
+      customTemplates,
+      recoveredOfficialRendererTemplateIds: undefined,
+    }
+
+    try {
+      saveTemplateWorkspace(nextWorkspace)
+      setTemplateWorkspace(nextWorkspace)
+      setTemplateNotice(
+        customTemplates.some(
+          (template) => recoveredIdSet.has(template.id) && template.status === 'ready',
+        )
+          ? '已自动修复旧模板的 PDF 版式和数据源，可以直接重新选择记录。'
+          : '已恢复旧模板的 PDF 版式；请点“修改”补齐主表、明细表和关联字段。',
+      )
+      addDiagnosticEvent('info', '已自动恢复旧版导入模板。')
+    } catch (storageError) {
+      setTemplateWorkspace(nextWorkspace)
+      setMessage('模板已在当前页面修复，但浏览器本地存储失败；刷新后可能需要再次修复。')
+      addDiagnosticEvent('error', '修复后的模板没有写入本地存储。', formatUnknownError(storageError))
+    }
+  }, [
+    addDiagnosticEvent,
+    hasResolvedDataSourceSchema,
+    templateWorkspace,
+    trustedDataSourceSchema,
+  ])
 
   useEffect(() => {
     let reloadTimer: number | undefined
@@ -424,8 +484,8 @@ function App() {
     [snapshot, previewTemplate],
   )
   const templateIssues = useMemo(
-    () => getTemplateIssues(activeTemplate, requiresTemplateSelection),
-    [activeTemplate, requiresTemplateSelection],
+    () => getTemplateIssues(activeTemplate, requiresTemplateSelection, trustedDataSourceSchema),
+    [activeTemplate, requiresTemplateSelection, trustedDataSourceSchema],
   )
   const allIssues = useMemo(
     () => [...(snapshot?.issues ?? []), ...templateIssues],
@@ -437,6 +497,14 @@ function App() {
   )
   const wrongTableIssue = useMemo(
     () => blockers.find((issue) => issue.code === 'wrong-table'),
+    [blockers],
+  )
+  const noRecordsIssue = useMemo(
+    () => blockers.find((issue) => issue.code === 'no-records'),
+    [blockers],
+  )
+  const templateDataSourceIssue = useMemo(
+    () => blockers.find((issue) => issue.code === 'template-data-source-incomplete'),
     [blockers],
   )
   const warnings = useMemo(
@@ -538,6 +606,16 @@ function App() {
   }
 
   function handleUseTemplate(templateId: string) {
+    const targetTemplate = templates.find((template) => template.id === templateId)
+    if (targetTemplate?.status !== 'ready') {
+      if (targetTemplate) {
+        handleEditTemplate(targetTemplate)
+        setTemplateNotice('这个模板还是草稿，请确认数据源后点“保存并使用”。')
+      }
+      return
+    }
+
+    const isAlreadyActive = activeTemplate.id === templateId
     setBridgedTemplate(null)
     const didSave = commitTemplateWorkspace({
       ...templateWorkspace,
@@ -547,9 +625,18 @@ function App() {
     if (!didSave) {
       return
     }
+    selectionReadSequenceRef.current += 1
+    selectionReloadTokenRef.current += 1
+    selectionReloadPendingRef.current = true
+    setIsSelectionReloadPending(true)
+    setSnapshot(null)
+    setIsLoading(true)
     setActivePanel('print')
     setIsMoreMenuOpen(false)
     setMessage(null)
+    if (isAlreadyActive) {
+      void loadCurrentSelection()
+    }
   }
 
   function handleNewTemplate() {
@@ -574,7 +661,18 @@ function App() {
   }
 
   async function handleSaveTemplate(template: PrintTemplate) {
-    const savedTemplate = normalizeTemplateForSave(template)
+    const normalizedTemplate = normalizeTemplateForSave(template)
+    const missingBindings = normalizedTemplate.officialTemplate
+      ? getMissingTemplateDataSourceBindings(normalizedTemplate, trustedDataSourceSchema)
+      : []
+    const savedTemplate = normalizedTemplate.officialTemplate
+      ? {
+          ...normalizedTemplate,
+          rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
+          status: missingBindings.length ? ('draft' as const) : ('ready' as const),
+        }
+      : normalizedTemplate
+    const isReadyToUse = savedTemplate.status === 'ready'
     const customTemplates = templateWorkspace.customTemplates.some(
       (current) => current.id === savedTemplate.id,
     )
@@ -584,15 +682,41 @@ function App() {
       : [...templateWorkspace.customTemplates, savedTemplate]
 
     const didSave = commitTemplateWorkspace({
-      activeTemplateId: savedTemplate.id,
+      activeTemplateId: isReadyToUse
+        ? savedTemplate.id
+        : templateWorkspace.activeTemplateId === savedTemplate.id
+          ? DEFAULT_TEST_TEMPLATE.id
+          : templateWorkspace.activeTemplateId,
       customTemplates,
+      retiredActiveTemplateId: isReadyToUse
+        ? undefined
+        : templateWorkspace.retiredActiveTemplateId,
     })
     if (!didSave) {
       return
     }
+    if (!isReadyToUse) {
+      setEditingTemplate(savedTemplate)
+      const nextStep = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
+        ? '请等待飞书字段结构读取完成，再重新确认数据源并保存。'
+        : `请补齐${missingBindings.join('、')}后再次保存。`
+      setTemplateImportNotice({
+        tone: 'info',
+        message: `草稿“${savedTemplate.name}”已保存，排版文件没有丢失。${nextStep}`,
+      })
+      await notifyHost('模板草稿已保存；请补齐主表、明细表和关联字段。')
+      return
+    }
+
+    selectionReadSequenceRef.current += 1
+    selectionReloadTokenRef.current += 1
+    selectionReloadPendingRef.current = true
+    setIsSelectionReloadPending(true)
+    setSnapshot(null)
+    setIsLoading(true)
     setEditingTemplate(null)
     setActivePanel('print')
-    setMessage('模板已保存到当前浏览器。')
+    setTemplateNotice(`模板“${savedTemplate.name}”已保存并可打印，正在读取当前选择…`)
   }
 
   function handleDeleteTemplate(templateId: string) {
@@ -671,10 +795,24 @@ function App() {
       }
 
       const rawText = await file.text()
-      const importedTemplate = importTemplateFromText(file.name, rawText)
+      const importedTemplate = suggestImportedTemplateBindings(
+        importTemplateFromText(file.name, rawText),
+        trustedDataSourceSchema,
+        snapshot?.context.mainTableName,
+        activeTemplate,
+        DEFAULT_TEST_TEMPLATE,
+      )
       setEditingTemplate(makeDesignerReadyTemplate(importedTemplate))
       setActivePanel('templates')
-      const successMessage = `已读取“${importedTemplate.name}”并打开编辑器。请依次选择主表、明细表和关联字段，检查字段后保存；未保存前不会加入“我的模板”。`
+      const missingBindings = getMissingTemplateDataSourceBindings(
+        importedTemplate,
+        trustedDataSourceSchema,
+      )
+      const successMessage = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
+        ? `已读取“${importedTemplate.name}”并打开编辑器。飞书字段结构尚未读取完成，可以先保存草稿，稍后再确认数据源。`
+        : missingBindings.length
+          ? `已读取“${importedTemplate.name}”并打开编辑器。请补齐${missingBindings.join('、')}后保存；未保存前不会加入“我的模板”。`
+        : `已读取“${importedTemplate.name}”，并自动匹配当前 Base 的主表、明细表和关联字段。检查无误后点“保存并使用”。`
       setTemplateImportNotice({ tone: 'success', message: successMessage })
       addDiagnosticEvent('info', '模板文件已导入。', `文件：${file.name}`)
     } catch (error) {
@@ -726,10 +864,14 @@ function App() {
   if (isDesignerMode && editingTemplate) {
     return (
       <TemplateDesigner
-        dataSourceSchema={dataSourceSchema}
+        dataSourceSchema={trustedDataSourceSchema}
         isDataPrintAllowed={
-          !isLoading && !isSelectionReloadPending && !requiresTemplateSelection
+          !isLoading &&
+          !isSelectionReloadPending &&
+          !requiresTemplateSelection &&
+          !snapshot?.issues.some((issue) => issue.severity === 'blocker')
         }
+        isTemplateActive={editingTemplate.id === activeTemplate.id && editingTemplate.status === 'ready'}
         onCancel={() => setEditingTemplate(null)}
         onSave={(template) => void handleSaveTemplate(template)}
         pdfStatus={pdfStatus}
@@ -954,9 +1096,17 @@ function App() {
           <span>当前表：{snapshot?.context.mainTableName || '尚未读取'}</span>
           <span>模板需要：{activeTemplate.mainTableName || '尚未设置'}</span>
           <span>
-            {isSelectionReloadPending
-              ? '正在更新勾选…'
-              : `已勾选：${snapshot?.selectedRecordIds.length ?? 0} 条`}
+            {isLoading || isSelectionReloadPending
+              ? '正在读取当前选择…'
+              : templateDataSourceIssue
+                ? '数据源待确认'
+                : wrongTableIssue
+                  ? '当前表不匹配'
+                  : noRecordsIssue
+                    ? '尚未选择记录'
+                    : snapshot
+                      ? `已勾选：${snapshot.selectedRecordIds.length} 条`
+                      : '尚未读取'}
           </span>
           <strong>{currentInvoiceNo}</strong>
           <span>{snapshot?.payload.documents.length ?? 0} 条单据</span>
@@ -1015,7 +1165,7 @@ function App() {
               onUseTemplate={handleUseTemplate}
               templateImportNotice={templateImportNotice}
               templates={templates}
-              dataSourceSchema={dataSourceSchema}
+              dataSourceSchema={trustedDataSourceSchema}
             />
           </section>
         ) : isLoading ? (
@@ -1027,11 +1177,27 @@ function App() {
           <iframe className="invoice-preview-frame" sandbox="" title="单据打印预览" srcDoc={previewHtml} />
         ) : (
           <section className="empty-stage">
-            <p>{isChromeExtension ? '尚未收到飞书勾选数据。' : '没有可预览的单据。'}</p>
+            <p>
+              {templateDataSourceIssue
+                ? '排版样式已经导入，还需要设置数据源。'
+                : wrongTableIssue
+                  ? '当前打开的数据表与模板不一致。'
+                  : noRecordsIssue
+                    ? '模板已经准备好，还没有选择记录。'
+                    : isChromeExtension
+                      ? '尚未收到飞书勾选数据。'
+                      : '没有可预览的单据。'}
+            </p>
             <p className="muted-text">
-              {isChromeExtension
-                ? '请保持飞书里的同名插件打开并勾选记录，再点击“同步飞书”。'
-                : '请选择已接入 PDF 版式的模板和记录。'}
+              {templateDataSourceIssue
+                ? '请点上方“修改”，选择主表、明细表和关联字段后保存。'
+                : wrongTableIssue
+                  ? wrongTableIssue.message
+                  : noRecordsIssue
+                    ? '请在表格每行最左侧勾选记录，或点击上方“选择要打印的记录”。'
+                    : isChromeExtension
+                      ? '请保持飞书里的同名插件打开并勾选记录，再点击“同步飞书”。'
+                      : '请选择可打印模板和记录。'}
             </p>
           </section>
         )}
@@ -1420,7 +1586,7 @@ function TemplateConsole({
               </div>
               <div className="template-row-actions">
                 <button onClick={() => onUseTemplate(template.id)} type="button">
-                  使用
+                  {template.status === 'ready' ? '使用' : '继续设置'}
                 </button>
                 <button onClick={() => onEditTemplate(template)} type="button">
                   编辑
@@ -1552,6 +1718,7 @@ function TemplateDeleteDialog({
 function TemplateDesigner({
   dataSourceSchema,
   isDataPrintAllowed,
+  isTemplateActive,
   onCancel,
   onSave,
   pdfStatus,
@@ -1560,6 +1727,7 @@ function TemplateDesigner({
 }: {
   dataSourceSchema: DataSourceSchema | null
   isDataPrintAllowed: boolean
+  isTemplateActive: boolean
   onCancel: () => void
   onSave: (template: PrintTemplate) => void
   pdfStatus: PdfServiceStatus
@@ -1602,8 +1770,27 @@ function TemplateDesigner({
   const mainFieldOptions = mainTableOption?.fields ?? []
   const itemFieldOptions = itemTableOption?.fields ?? []
   const unboundFields = [...draft.mainFields, ...draft.itemFields].filter((field) => !field.label.trim())
+  const missingDataSourceBindings = getMissingTemplateDataSourceBindings(
+    draft,
+    dataSourceSchema,
+  )
+  const hasUnsavedTemplateChanges = draft !== template
+  const hasMatchingOfficialSnapshot = Boolean(
+    snapshot?.selectedRecordIds.length &&
+      snapshot.context.mainTableName === draft.mainTableName.trim() &&
+      snapshot.context.itemTableName === draft.itemTableName.trim() &&
+      snapshot.payload.documents.length &&
+      snapshot.payload.documents.every((document) => Boolean(document.official)),
+  )
   const canRenderPdf =
-    isDataPrintAllowed && Boolean(previewPayload) && pdfStatus === 'online' && !busyAction
+    isDataPrintAllowed &&
+    isTemplateActive &&
+    !hasUnsavedTemplateChanges &&
+    missingDataSourceBindings.length === 0 &&
+    hasMatchingOfficialSnapshot &&
+    Boolean(previewPayload) &&
+    pdfStatus === 'online' &&
+    !busyAction
   const isDesignerFocusMode = isDesignerLeftCollapsed && isDesignerRightCollapsed
 
   useEffect(() => {
@@ -1931,13 +2118,21 @@ function TemplateDesigner({
             className="small-button small-button-accent"
             disabled={!canRenderPdf}
             onClick={() => void openDesignerPrintWorkspace()}
-            title="在独立窗口中可打印或选择“另存为 PDF”"
+            title={
+              missingDataSourceBindings.length
+                ? '请先设置主表、明细表和关联字段'
+                : !isTemplateActive || hasUnsavedTemplateChanges
+                  ? '请先保存并使用模板，再读取当前记录'
+                : hasMatchingOfficialSnapshot
+                  ? '在独立窗口中可打印或选择“另存为 PDF”'
+                  : '请先保存模板并在飞书表格中选择记录'
+            }
             type="button"
           >
             {busyAction === 'workspace' ? '打开中' : '在新窗口打印'}
           </button>
           <button className="small-button" onClick={() => onSave(draft)} type="button">
-            保存模板
+            {missingDataSourceBindings.length ? '保存草稿' : '保存并使用'}
           </button>
         </div>
       </header>
@@ -1997,6 +2192,17 @@ function TemplateDesigner({
                 onChange={(value) => updateDraft('linkedItemsFieldName', value)}
               />
             </label>
+            {missingDataSourceBindings.length ? (
+              <p className="designer-binding-alert" role="status">
+                {missingDataSourceBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
+                  ? '排版样式已经导入，但飞书字段结构尚未读取完成。可以先保存草稿，读取完成后再确认数据源。'
+                  : `排版样式已经导入，还差：${missingDataSourceBindings.join('、')}。可以先保存草稿，补齐后再保存即可读取记录。`}
+              </p>
+            ) : (
+              <p className="designer-binding-ready" role="status">
+                数据源已设置，保存后会立即读取当前勾选记录。
+              </p>
+            )}
           </section>
 
           <section className="designer-section">
@@ -2818,8 +3024,8 @@ function TemplateEditor({
 
       <div className="template-save-state">
         <StatusChip
-          label={getDraftTemplateStateLabel(draft)}
-          tone={canDraftTemplateRenderAfterSave(draft) ? 'cool' : 'warm'}
+          label={getDraftTemplateStateLabel(draft, dataSourceSchema)}
+          tone={canDraftTemplateRenderAfterSave(draft, dataSourceSchema) ? 'cool' : 'warm'}
         />
         <span>{formatTemplateDate(draft.updatedAt)}</span>
       </div>
@@ -3241,6 +3447,7 @@ function buildPayloadForTemplate(
 function getTemplateIssues(
   template: PrintTemplate,
   requiresTemplateSelection = false,
+  schema?: DataSourceSchema | null,
 ): ValidationIssue[] {
   if (requiresTemplateSelection) {
     return [
@@ -3251,6 +3458,32 @@ function getTemplateIssues(
           '你之前使用的内置模板已从列表精简。请到“模板管理”导入旧版模板文件，或明确选择系统测试模板后再打印。',
       },
     ]
+  }
+
+  if (template.officialTemplate) {
+    const missingBindings = getMissingTemplateDataSourceBindings(template, schema)
+    if (missingBindings.length) {
+      const schemaUnavailable = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
+      return [
+        {
+          severity: 'blocker',
+          code: 'template-data-source-incomplete',
+          message: schemaUnavailable
+            ? `模板「${template.name}」的排版样式已经保留，但尚未通过当前 Base 的数据源验证。请等待字段结构读取完成，或点“修改”重新确认。`
+            : `模板「${template.name}」的排版样式已经导入，还差：${missingBindings.join('、')}。请点“修改”补齐后再选择记录。`,
+        },
+      ]
+    }
+
+    if (template.status !== 'ready') {
+      return [
+        {
+          severity: 'blocker',
+          code: 'template-save-required',
+          message: `模板「${template.name}」的排版样式和数据源已经就绪。请点“修改”检查后，再点“保存并使用”。`,
+        },
+      ]
+    }
   }
 
   if (template.status === 'ready' && template.rendererTemplateId) {
@@ -3266,13 +3499,13 @@ function getTemplateIssues(
   ]
 }
 
-function canDraftTemplateRenderAfterSave(template: PrintTemplate): boolean {
+function canDraftTemplateRenderAfterSave(
+  template: PrintTemplate,
+  schema?: DataSourceSchema | null,
+): boolean {
   if (
-    template.rendererTemplateId === OFFICIAL_LAYOUT_TEMPLATE_ID &&
     template.officialTemplate &&
-    template.mainTableName.trim() &&
-    template.itemTableName.trim() &&
-    template.linkedItemsFieldName.trim()
+    getMissingTemplateDataSourceBindings(template, schema).length === 0
   ) {
     return true
   }
@@ -3286,12 +3519,147 @@ function canDraftTemplateRenderAfterSave(template: PrintTemplate): boolean {
   )
 }
 
-function getDraftTemplateStateLabel(template: PrintTemplate): string {
+function getMissingTemplateDataSourceBindings(
+  template: PrintTemplate,
+  schema?: DataSourceSchema | null,
+): string[] {
+  const missing = new Set<string>()
+  const mainTableName =
+    typeof template.mainTableName === 'string' ? template.mainTableName.trim() : ''
+  const itemTableName =
+    typeof template.itemTableName === 'string' ? template.itemTableName.trim() : ''
+  const linkedItemsFieldName =
+    typeof template.linkedItemsFieldName === 'string'
+      ? template.linkedItemsFieldName.trim()
+      : ''
+
+  if (!mainTableName) {
+    missing.add('主表')
+  }
+  if (!itemTableName) {
+    missing.add('明细表')
+  }
+  if (!linkedItemsFieldName) {
+    missing.add('关联字段')
+  }
+
+  if (schema === undefined) {
+    return [...missing]
+  }
+
+  if (!schema) {
+    missing.add(DATA_SOURCE_CONFIRMATION_LABEL)
+    return [...missing]
+  }
+
+  const mainTable = schema.tables.find((table) => table.name === mainTableName)
+  const itemTable = schema.tables.find((table) => table.name === itemTableName)
+  if (mainTableName && !mainTable) {
+    missing.add('主表')
+  }
+  if (itemTableName && !itemTable) {
+    missing.add('明细表')
+  }
+
+  if (mainTable && linkedItemsFieldName) {
+    const linkedField = mainTable.fields.find(
+      (field) => field.name === linkedItemsFieldName,
+    )
+    const linkedTable = linkedField?.linkedTableId
+      ? schema.tables.find((table) => table.id === linkedField.linkedTableId)
+      : undefined
+    if (!linkedField?.linkedTableId || !linkedTable) {
+      missing.add('关联字段')
+    } else if (!itemTable || linkedTable.id !== itemTable.id) {
+      missing.add('明细表')
+    }
+  }
+
+  return [...missing]
+}
+
+function suggestImportedTemplateBindings(
+  template: PrintTemplate,
+  schema: DataSourceSchema | null,
+  preferredMainTableName?: string,
+  ...fallbackTemplates: PrintTemplate[]
+): PrintTemplate {
+  if (!template.officialTemplate) {
+    return template
+  }
+
+  if (!schema) {
+    return {
+      ...template,
+      rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
+      status: 'draft',
+    }
+  }
+
+  const tables = schema.tables
+  const tableByName = new Map(tables.map((table) => [table.name, table]))
+  const tableById = new Map(tables.map((table) => [table.id, table]))
+  const firstAvailableTableName = (names: Array<string | undefined>) =>
+    names.find((name): name is string => Boolean(name && tableByName.has(name))) ?? ''
+
+  const originalMainTableName = template.mainTableName
+  const originalItemTableName = template.itemTableName
+  const originalLinkedItemsFieldName = template.linkedItemsFieldName
+  const mainTableName = originalMainTableName.trim()
+    ? originalMainTableName
+    : firstAvailableTableName([
+        preferredMainTableName,
+        schema.activeTableName,
+        ...fallbackTemplates.map((candidate) => candidate.mainTableName),
+      ])
+  const mainTable = tableByName.get(mainTableName.trim())
+  const linkedFieldCandidates = [
+    ...template.officialTemplate.dynamicRoots,
+    ...fallbackTemplates.map((candidate) => candidate.linkedItemsFieldName),
+  ]
+  const inferredLinkedField = mainTable?.fields.find(
+    (field) => linkedFieldCandidates.includes(field.name) && Boolean(
+      field.linkedTableId && tableById.has(field.linkedTableId),
+    ),
+  )
+  const linkedItemsFieldName = originalLinkedItemsFieldName.trim()
+    ? originalLinkedItemsFieldName
+    : inferredLinkedField?.name ?? ''
+  const linkedField = mainTable?.fields.find(
+    (field) => field.name === linkedItemsFieldName.trim(),
+  )
+  const linkedItemTableName = linkedField?.linkedTableId
+    ? tableById.get(linkedField.linkedTableId)?.name
+    : undefined
+  const itemTableName = originalItemTableName.trim()
+    ? originalItemTableName
+    : linkedItemTableName ?? ''
+  const missingBindings = getMissingTemplateDataSourceBindings({
+    ...template,
+    mainTableName,
+    itemTableName,
+    linkedItemsFieldName,
+  }, schema)
+
+  return {
+    ...template,
+    mainTableName,
+    itemTableName,
+    linkedItemsFieldName,
+    rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
+    status: missingBindings.length ? 'draft' : 'ready',
+  }
+}
+
+function getDraftTemplateStateLabel(
+  template: PrintTemplate,
+  schema?: DataSourceSchema | null,
+): string {
   if (template.status === 'ready') {
     return '可打印'
   }
 
-  if (canDraftTemplateRenderAfterSave(template)) {
+  if (canDraftTemplateRenderAfterSave(template, schema)) {
     return '保存后可打印'
   }
 

@@ -21,6 +21,7 @@ export type TemplateWorkspace = {
   activeTemplateId: string
   customTemplates: PrintTemplate[]
   retiredActiveTemplateId?: string
+  recoveredOfficialRendererTemplateIds?: string[]
 }
 
 type StoredWorkspace = Partial<TemplateWorkspace>
@@ -35,9 +36,20 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
     }
 
     const parsed = JSON.parse(stored) as StoredWorkspace
-    const customTemplates = Array.isArray(parsed.customTemplates)
-      ? parsed.customTemplates.filter(isCustomTemplate).map(hydrateTemplate)
+    const storedCustomTemplates = Array.isArray(parsed.customTemplates)
+      ? parsed.customTemplates.filter(isCustomTemplate)
       : []
+    const recoveredOfficialRendererTemplateIds = storedCustomTemplates
+      .filter(
+        (template) =>
+          Boolean(template.officialTemplate) &&
+          template.rendererTemplateId !== OFFICIAL_LAYOUT_TEMPLATE_ID,
+      )
+      .map((template) => template.id)
+    const recoveredOfficialRendererTemplateIdSet = new Set(recoveredOfficialRendererTemplateIds)
+    const customTemplates = storedCustomTemplates.map((template) =>
+      hydrateTemplate(template, recoveredOfficialRendererTemplateIdSet.has(template.id)),
+    )
     const storedActiveTemplateId =
       typeof parsed.activeTemplateId === 'string' ? parsed.activeTemplateId : ''
     const hasStoredTemplate = Boolean(
@@ -58,6 +70,9 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
       activeTemplateId: hasStoredTemplate ? storedActiveTemplateId : fallback.activeTemplateId,
       customTemplates,
       retiredActiveTemplateId,
+      recoveredOfficialRendererTemplateIds: recoveredOfficialRendererTemplateIds.length
+        ? recoveredOfficialRendererTemplateIds
+        : undefined,
     }
   } catch {
     return fallback
@@ -142,17 +157,18 @@ export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate
   const now = new Date().toISOString()
   const name = template.name.trim() || '未命名单据模板'
   const documentKind: DocumentKind = template.documentKind
-  const canUseOfficialRenderer =
-    template.rendererTemplateId === OFFICIAL_LAYOUT_TEMPLATE_ID &&
-    Boolean(template.officialTemplate) &&
-    Boolean(template.mainTableName.trim()) &&
-    Boolean(template.itemTableName.trim()) &&
-    Boolean(template.linkedItemsFieldName.trim())
+  const hasOfficialTemplate = Boolean(template.officialTemplate)
+  const canUseOfficialRenderer = hasOfficialTemplate && hasCompleteDataSourceBinding(template)
   const canUseExistingRenderer =
     (template.rendererTemplateId === PROFORMA_INVOICE_TEMPLATE_ID && documentKind === 'proforma-invoice') ||
     (template.rendererTemplateId === COMMERCIAL_INVOICE_TEMPLATE_ID && documentKind === 'commercial-invoice') ||
     (template.rendererTemplateId === PACKING_LIST_TEMPLATE_ID && documentKind === 'packing-list')
   const canRender = canUseOfficialRenderer || canUseExistingRenderer
+  const rendererTemplateId = hasOfficialTemplate
+    ? OFFICIAL_LAYOUT_TEMPLATE_ID
+    : canUseExistingRenderer
+      ? template.rendererTemplateId
+      : undefined
 
   return {
     ...template,
@@ -160,11 +176,13 @@ export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate
     documentKind,
     description: template.description.trim(),
     isBuiltIn: false,
-    rendererTemplateId: canRender ? template.rendererTemplateId : undefined,
+    rendererTemplateId,
     status: canRender ? 'ready' : 'draft',
     mainTableName: template.mainTableName.trim(),
     itemTableName: template.itemTableName.trim(),
-    linkedItemsFieldName: template.linkedItemsFieldName.trim() || LINKED_ITEMS_FIELD_NAME,
+    linkedItemsFieldName:
+      template.linkedItemsFieldName.trim() ||
+      (hasOfficialTemplate ? '' : LINKED_ITEMS_FIELD_NAME),
     officialTemplate: cloneOfficialTemplate(template.officialTemplate),
     designOverrides: cloneDesignOverrides(template.designOverrides),
     printSettings: clonePrintSettings(template.printSettings),
@@ -172,13 +190,33 @@ export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate
   }
 }
 
-function hydrateTemplate(template: PrintTemplate): PrintTemplate {
+function hydrateTemplate(template: PrintTemplate, requiresSchemaValidation = false): PrintTemplate {
+  const officialTemplate = cloneOfficialTemplate(template.officialTemplate)
   return {
     ...template,
-    officialTemplate: cloneOfficialTemplate(template.officialTemplate),
+    status: officialTemplate
+      ? requiresSchemaValidation
+        ? 'draft'
+        : template.status
+      : template.status,
+    rendererTemplateId: officialTemplate
+      ? OFFICIAL_LAYOUT_TEMPLATE_ID
+      : template.rendererTemplateId,
+    officialTemplate,
     designOverrides: cloneDesignOverrides(template.designOverrides),
     printSettings: clonePrintSettings(template.printSettings),
   }
+}
+
+function hasCompleteDataSourceBinding(template: PrintTemplate): boolean {
+  return Boolean(
+    typeof template.mainTableName === 'string' &&
+      template.mainTableName.trim() &&
+      typeof template.itemTableName === 'string' &&
+      template.itemTableName.trim() &&
+      typeof template.linkedItemsFieldName === 'string' &&
+      template.linkedItemsFieldName.trim(),
+  )
 }
 
 function createFallbackWorkspace(): TemplateWorkspace {

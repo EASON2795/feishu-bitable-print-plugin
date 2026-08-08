@@ -210,7 +210,7 @@ export async function loadPiSnapshot(
     issues.push({
       severity: 'blocker',
       code: 'no-records',
-      message: `请先在飞书表格中选中要打印的${documentLabel}记录，或点击“进入批量模式”。`,
+      message: `请先在飞书表格每行最左侧勾选要打印的${documentLabel}记录，或点击“选择要打印的记录”。`,
     })
     return buildSnapshot(tableContext, template, [], issues, [])
   }
@@ -247,7 +247,11 @@ export async function notifyHost(message: string): Promise<void> {
 
 export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
   try {
-    const tableMetas = await bitable.base.getTableMetaList()
+    const [tableMetas, activeTable] = await Promise.all([
+      bitable.base.getTableMetaList(),
+      bitable.base.getActiveTable(),
+    ])
+    const activeTableMeta = await activeTable.getMeta()
     const tables = await Promise.all(
       tableMetas.map(async (tableMeta) => {
         const table = await bitable.base.getTableById(tableMeta.id)
@@ -259,6 +263,13 @@ export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
             id: field.id,
             name: field.name,
             type: String(field.type),
+            linkedTableId:
+              field.property &&
+              typeof field.property === 'object' &&
+              'tableId' in field.property &&
+              typeof field.property.tableId === 'string'
+                ? field.property.tableId
+                : undefined,
           })),
         }
       }),
@@ -266,6 +277,7 @@ export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
 
     return {
       source: 'feishu',
+      activeTableName: activeTableMeta.name,
       tables,
     }
   } catch {
@@ -280,6 +292,7 @@ export async function loadSyncedTemplate(): Promise<PrintTemplate | null> {
 export function getMockDataSourceSchema(): DataSourceSchema {
   return {
     source: 'mock',
+    activeTableName: PI_MAIN_TABLE_NAME,
     tables: [
       {
         id: 'tbl_mock_pi_export',
@@ -287,7 +300,12 @@ export function getMockDataSourceSchema(): DataSourceSchema {
         fields: [
           ...Object.values(MAIN_FIELD_LABELS),
           LINKED_ITEMS_FIELD_NAME,
-        ].map((name) => ({ id: `mock-${name}`, name, type: 'mock' })),
+        ].map((name) => ({
+          id: `mock-${name}`,
+          name,
+          type: 'mock',
+          linkedTableId: name === LINKED_ITEMS_FIELD_NAME ? 'tbl_mock_pi_items' : undefined,
+        })),
       },
       {
         id: 'tbl_mock_pi_items',

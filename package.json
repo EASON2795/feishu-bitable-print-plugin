@@ -1,7 +1,7 @@
 {
   "name": "feishu-bitable-print-plugin",
   "private": false,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Privacy-first document layout and local printing for Feishu/Lark Base.",
   "type": "module",
   "license": "MIT",
