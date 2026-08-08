@@ -1,4 +1,14 @@
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import './App.css'
 import {
   getMockDataSourceSchema,
@@ -17,6 +27,7 @@ import {
   getPrintRuntimeLabel,
   printDirectly,
 } from './localPrint'
+import { exportLongImage, exportPdf } from './localExport'
 import { buildPrintDocument } from './printDocument'
 import {
   bindFieldToDesignTarget,
@@ -59,6 +70,8 @@ import {
 } from './types'
 
 type ActivePanel = 'print' | 'templates'
+type OutputAction = 'print' | 'export-pdf' | 'export-image'
+type ToolbarMenuId = 'more' | 'export'
 
 type DiagnosticEvent = {
   id: string
@@ -148,10 +161,15 @@ function App() {
   const selectionReloadPendingRef = useRef(false)
   const activeTemplateRef = useRef<PrintTemplate | null>(null)
   const deleteTemplateTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const moreMenuWrapRef = useRef<HTMLDivElement | null>(null)
+  const moreMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const exportMenuWrapRef = useRef<HTMLDivElement | null>(null)
+  const exportMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const restoreExportFocusRef = useRef(false)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
-  const [busyAction, setBusyAction] = useState<'print' | null>(null)
+  const [busyAction, setBusyAction] = useState<OutputAction | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
@@ -161,7 +179,7 @@ function App() {
     () => typeof window !== 'undefined' && window.innerWidth < 860,
   )
   const [showDiagnostics, setShowDiagnostics] = useState(false)
-  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [openToolbarMenu, setOpenToolbarMenu] = useState<ToolbarMenuId | null>(null)
   const [templateSearch, setTemplateSearch] = useState('')
   const [diagnosticEvents, setDiagnosticEvents] = useState<DiagnosticEvent[]>(() => [
     createDiagnosticEvent(
@@ -172,6 +190,14 @@ function App() {
   const [templateWorkspace, setTemplateWorkspace] = useState<TemplateWorkspace>(() =>
     loadTemplateWorkspace(),
   )
+
+  useEffect(() => {
+    if (busyAction || !restoreExportFocusRef.current) {
+      return
+    }
+    restoreExportFocusRef.current = false
+    window.setTimeout(() => exportMenuTriggerRef.current?.focus(), 0)
+  }, [busyAction])
   const [bridgedTemplate, setBridgedTemplate] = useState<PrintTemplate | null>(null)
   const [editingTemplate, setEditingTemplate] = useState<PrintTemplate | null>(null)
   const [pendingDeleteTemplate, setPendingDeleteTemplate] = useState<PrintTemplate | null>(null)
@@ -201,6 +227,26 @@ function App() {
     narrowPanel.addEventListener('change', syncPanelLayout)
     return () => narrowPanel.removeEventListener('change', syncPanelLayout)
   }, [])
+
+  useEffect(() => {
+    if (!openToolbarMenu) {
+      return undefined
+    }
+
+    const activeWrap = openToolbarMenu === 'more' ? moreMenuWrapRef.current : exportMenuWrapRef.current
+    const closeWhenOutside = (event: PointerEvent | FocusEvent) => {
+      if (event.target instanceof Node && !activeWrap?.contains(event.target)) {
+        setOpenToolbarMenu(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', closeWhenOutside)
+    document.addEventListener('focusin', closeWhenOutside)
+    return () => {
+      document.removeEventListener('pointerdown', closeWhenOutside)
+      document.removeEventListener('focusin', closeWhenOutside)
+    }
+  }, [openToolbarMenu])
 
   useEffect(() => {
     if (!templateNotice) {
@@ -530,25 +576,109 @@ function App() {
       return
     }
 
-    await runPdfAction('print', async () => {
+    await runOutputAction('print', async () => {
       void notifyHost('正在打开系统打印对话框。')
       await printDirectly(printPayload)
     })
   }
 
-  async function runPdfAction(label: 'print', action: () => Promise<void>) {
+  async function handleExportPdf() {
+    setOpenToolbarMenu(null)
+    if (!printPayload || !canRenderPdf) {
+      return
+    }
+
+    await runOutputAction('export-pdf', async () => {
+      await exportPdf(printPayload)
+      setTemplateNotice('PDF 已生成，已开始下载。')
+      void notifyHost('PDF 已生成，已开始下载。')
+    })
+  }
+
+  async function handleExportLongImage() {
+    setOpenToolbarMenu(null)
+    if (!printPayload || !canRenderPdf) {
+      return
+    }
+
+    await runOutputAction('export-image', async () => {
+      await exportLongImage(printPayload)
+      setTemplateNotice('长图已生成，已开始下载。')
+      void notifyHost('长图已生成，已开始下载。')
+    })
+  }
+
+  async function runOutputAction(label: OutputAction, action: () => Promise<void>) {
+    restoreExportFocusRef.current = label === 'export-pdf' || label === 'export-image'
     setBusyAction(label)
     setMessage(null)
+    setTemplateNotice(null)
 
     try {
       await action()
     } catch (actionError) {
-      const nextMessage = actionError instanceof Error ? actionError.message : '打印失败。'
+      const actionName = getOutputActionLabel(label)
+      const nextMessage = actionError instanceof Error ? actionError.message : `${actionName}失败。`
       setMessage(nextMessage)
-      addDiagnosticEvent('error', '打印失败。', formatUnknownError(actionError))
+      setShowDiagnostics(true)
+      addDiagnosticEvent('error', `${actionName}失败。`, formatUnknownError(actionError))
       await notifyHost(nextMessage)
     } finally {
       setBusyAction(null)
+    }
+  }
+
+  function openToolbarMenuAndFocus(menu: ToolbarMenuId, edge: 'first' | 'last' = 'first') {
+    setOpenToolbarMenu(menu)
+    window.setTimeout(() => {
+      const menuElement = (menu === 'more' ? moreMenuWrapRef.current : exportMenuWrapRef.current)?.querySelector<HTMLElement>(
+        '[role="menu"]',
+      )
+      const items = getEnabledMenuItems(menuElement ?? null)
+      items[edge === 'first' ? 0 : items.length - 1]?.focus()
+    }, 0)
+  }
+
+  function handleToolbarTriggerKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, menu: ToolbarMenuId) {
+    if (event.key === 'Escape' && openToolbarMenu === menu) {
+      event.preventDefault()
+      setOpenToolbarMenu(null)
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      openToolbarMenuAndFocus(menu, 'first')
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      openToolbarMenuAndFocus(menu, 'last')
+    }
+  }
+
+  function handleToolbarMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, menu: ToolbarMenuId) {
+    const items = getEnabledMenuItems(event.currentTarget)
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    let nextIndex: number | null = null
+
+    if (event.key === 'ArrowDown') {
+      nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length
+    } else if (event.key === 'ArrowUp') {
+      nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = items.length - 1
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpenToolbarMenu(null)
+      const trigger = menu === 'more' ? moreMenuTriggerRef.current : exportMenuTriggerRef.current
+      trigger?.focus()
+      return
+    } else if (event.key === 'Tab') {
+      setOpenToolbarMenu(null)
+      return
+    }
+
+    if (nextIndex !== null && items.length) {
+      event.preventDefault()
+      items[nextIndex]?.focus()
     }
   }
 
@@ -632,7 +762,7 @@ function App() {
     setSnapshot(null)
     setIsLoading(true)
     setActivePanel('print')
-    setIsMoreMenuOpen(false)
+    setOpenToolbarMenu(null)
     setMessage(null)
     if (isAlreadyActive) {
       void loadCurrentSelection()
@@ -643,21 +773,21 @@ function App() {
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(createBlankTemplate()))
     setActivePanel('templates')
-    setIsMoreMenuOpen(false)
+    setOpenToolbarMenu(null)
   }
 
   function handleCopyTemplate(template: PrintTemplate) {
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(copyTemplate(template)))
     setActivePanel('templates')
-    setIsMoreMenuOpen(false)
+    setOpenToolbarMenu(null)
   }
 
   function handleEditTemplate(template: PrintTemplate) {
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(template.isBuiltIn ? copyTemplate(template) : template))
     setActivePanel('templates')
-    setIsMoreMenuOpen(false)
+    setOpenToolbarMenu(null)
   }
 
   async function handleSaveTemplate(template: PrintTemplate) {
@@ -1006,49 +1136,99 @@ function App() {
                 </label>
               </>
             ) : null}
-            <div className="more-menu-wrap">
+            <div className="more-menu-wrap more-menu-wrap-start" ref={moreMenuWrapRef}>
               <button
+                aria-controls="preview-more-menu"
+                aria-expanded={openToolbarMenu === 'more'}
+                aria-haspopup="menu"
                 className="toolbar-button"
-                onClick={() => setIsMoreMenuOpen((current) => !current)}
+                disabled={Boolean(busyAction)}
+                onClick={() => setOpenToolbarMenu((current) => (current === 'more' ? null : 'more'))}
+                onKeyDown={(event) => handleToolbarTriggerKeyDown(event, 'more')}
+                ref={moreMenuTriggerRef}
                 type="button"
               >
                 更多
               </button>
-              {isMoreMenuOpen ? (
-                <div className="more-menu" role="menu">
+              {openToolbarMenu === 'more' ? (
+                <div
+                  aria-label="更多操作"
+                  className="more-menu"
+                  id="preview-more-menu"
+                  onKeyDown={(event) => handleToolbarMenuKeyDown(event, 'more')}
+                  role="menu"
+                >
                   {isChromeExtension ? (
                     <>
-                      <button onClick={() => void loadCurrentSelection()} disabled={isLoading} type="button">
+                      <button
+                        disabled={isLoading}
+                        onClick={() => {
+                          setOpenToolbarMenu(null)
+                          void loadCurrentSelection()
+                        }}
+                        role="menuitem"
+                        type="button"
+                      >
                         读取飞书勾选数据
                       </button>
-                      <label htmlFor="local-data-upload" onClick={() => setIsMoreMenuOpen(false)}>
+                      <button
+                        onClick={() => {
+                          setOpenToolbarMenu(null)
+                          document.getElementById('local-data-upload')?.click()
+                        }}
+                        role="menuitem"
+                        type="button"
+                      >
                         导入 CSV / JSON
-                      </label>
-                      <button onClick={handleLoadDemoData} type="button">
+                      </button>
+                      <button
+                        onClick={() => {
+                          setOpenToolbarMenu(null)
+                          handleLoadDemoData()
+                        }}
+                        role="menuitem"
+                        type="button"
+                      >
                         载入虚构示例
                       </button>
                     </>
                   ) : (
-                    <button onClick={() => void handlePickRecords()} disabled={!canPickRecords} type="button">
+                    <button
+                      disabled={!canPickRecords}
+                      onClick={() => {
+                        setOpenToolbarMenu(null)
+                        void handlePickRecords()
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
                       选择要打印的记录
                     </button>
                   )}
-                  <button onClick={() => handleEditTemplate(activeTemplate)} type="button">
+                  <button onClick={() => handleEditTemplate(activeTemplate)} role="menuitem" type="button">
                     排版设置
                   </button>
-                  <button onClick={() => handleCopyTemplate(activeTemplate)} type="button">
+                  <button onClick={() => handleCopyTemplate(activeTemplate)} role="menuitem" type="button">
                     复制排版
                   </button>
                   {!isChromeExtension ? (
-                    <button onClick={() => void loadCurrentSelection()} type="button">
+                    <button
+                      onClick={() => {
+                        setOpenToolbarMenu(null)
+                        void loadCurrentSelection()
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
                       刷新数据
                     </button>
                   ) : null}
                   <button
                     onClick={() => {
                       setShowDiagnostics((current) => !current)
-                      setIsMoreMenuOpen(false)
+                      setOpenToolbarMenu(null)
                     }}
+                    role="menuitem"
                     type="button"
                   >
                     {showDiagnostics ? '收起诊断' : '打开诊断'}
@@ -1056,8 +1236,9 @@ function App() {
                   <button
                     onClick={() => {
                       setIsControlPanelCollapsed((current) => !current)
-                      setIsMoreMenuOpen(false)
+                      setOpenToolbarMenu(null)
                     }}
+                    role="menuitem"
                     type="button"
                   >
                     {isControlPanelCollapsed ? '显示模板栏' : '收起模板栏'}
@@ -1065,23 +1246,55 @@ function App() {
                 </div>
               ) : null}
             </div>
-            {!isControlPanelCollapsed ? (
-              <button
-                className="toolbar-button toolbar-button-quiet"
-                onClick={() => setIsControlPanelCollapsed(true)}
-                type="button"
-              >
-                隐藏模板
-              </button>
-            ) : null}
-            <button className="toolbar-button" onClick={() => handleEditTemplate(activeTemplate)} type="button">
+            <button
+              className="toolbar-button"
+              disabled={Boolean(busyAction)}
+              onClick={() => handleEditTemplate(activeTemplate)}
+              type="button"
+            >
               编辑
             </button>
+            {!isChromeExtension ? (
+              <div className="more-menu-wrap export-menu-wrap" ref={exportMenuWrapRef}>
+                <button
+                  aria-busy={busyAction === 'export-pdf' || busyAction === 'export-image'}
+                  aria-controls="preview-export-menu"
+                  aria-expanded={openToolbarMenu === 'export'}
+                  aria-haspopup="menu"
+                  className="toolbar-button"
+                  disabled={!canRenderPdf}
+                  onClick={() => setOpenToolbarMenu((current) => (current === 'export' ? null : 'export'))}
+                  onKeyDown={(event) => handleToolbarTriggerKeyDown(event, 'export')}
+                  ref={exportMenuTriggerRef}
+                type="button"
+              >
+                  {busyAction === 'export-pdf' || busyAction === 'export-image' ? '导出中…' : '导出'}
+                </button>
+                {openToolbarMenu === 'export' ? (
+                  <div
+                    aria-label="导出格式"
+                    className="more-menu export-menu"
+                    id="preview-export-menu"
+                    onKeyDown={(event) => handleToolbarMenuKeyDown(event, 'export')}
+                    role="menu"
+                  >
+                    <button onClick={() => void handleExportPdf()} role="menuitem" type="button">
+                      <strong>导出 PDF</strong>
+                      <span>适合发送和归档</span>
+                    </button>
+                    <button onClick={() => void handleExportLongImage()} role="menuitem" type="button">
+                      <strong>导出长图</strong>
+                      <span>保存为 PNG 图片</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <button
               className="toolbar-button toolbar-button-primary"
               onClick={() => void handlePrint()}
               disabled={!canRenderPdf}
-              title="直接打开系统打印，可选择打印机或“另存为 PDF”"
+              title="打开系统打印对话框"
               type="button"
             >
               {busyAction === 'print' ? '准备打印…' : '打印'}
@@ -1127,7 +1340,7 @@ function App() {
         {blockers.length || showDiagnostics ? (
           <section className="workbench-drawer">
             {message && showDiagnostics ? (
-              <section className="alert-banner">
+              <section className="alert-banner" role="alert">
                 <strong>当前提示</strong>
                 <p>{message}</p>
               </section>
@@ -1212,13 +1425,27 @@ function App() {
       {templateNotice ? (
         <div aria-live="polite" className="template-action-toast" role="status">
           <span>{templateNotice}</span>
-          <button aria-label="关闭模板提示" onClick={() => setTemplateNotice(null)} type="button">
+          <button aria-label="关闭提示" onClick={() => setTemplateNotice(null)} type="button">
             ×
           </button>
         </div>
       ) : null}
     </div>
   )
+}
+
+function getEnabledMenuItems(root: ParentNode | null): HTMLElement[] {
+  return root ? Array.from(root.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])')) : []
+}
+
+function getOutputActionLabel(action: OutputAction): string {
+  if (action === 'export-pdf') {
+    return 'PDF 导出'
+  }
+  if (action === 'export-image') {
+    return '长图导出'
+  }
+  return '打印'
 }
 
 function TemplateSidebar({
@@ -2128,7 +2355,7 @@ function TemplateDesigner({
                 : !isTemplateActive || hasUnsavedTemplateChanges
                   ? '请先保存并使用模板，再读取当前记录'
                 : hasMatchingOfficialSnapshot
-                  ? '直接打开系统打印，可选择打印机或“另存为 PDF”'
+                  ? '打开系统打印对话框'
                   : '请先保存模板并在飞书表格中选择记录'
             }
             type="button"

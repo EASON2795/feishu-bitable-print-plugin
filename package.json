@@ -1,7 +1,7 @@
 {
   "name": "feishu-bitable-print-plugin",
   "private": false,
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Privacy-first document layout and local printing for Feishu/Lark Base.",
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,7 @@
     "invoice"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "output": "dist",
   "scripts": {
@@ -37,6 +37,8 @@
   },
   "dependencies": {
     "@lark-base-open/js-sdk": "^1.0.2",
+    "html2canvas": "1.4.1",
+    "jspdf": "4.2.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

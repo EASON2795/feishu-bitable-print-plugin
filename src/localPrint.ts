@@ -187,7 +187,7 @@ function wireDirectPrintControls(target: Window): () => void {
   return () => {
     status.textContent = '系统打印没有自动出现？请点击页面上的“打印”按钮。'
     printButton.disabled = false
-    printButton.textContent = '打印 / 另存 PDF'
+    printButton.textContent = '打印'
   }
 }
 

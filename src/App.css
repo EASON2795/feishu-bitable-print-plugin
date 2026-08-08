@@ -1290,6 +1290,12 @@
   background: #f8fafc;
 }
 
+.toolbar-button:focus-visible,
+.more-menu button:focus-visible {
+  outline: 3px solid rgba(29, 92, 255, 0.24);
+  outline-offset: 2px;
+}
+
 .toolbar-button-primary {
   color: #ffffff;
   border-color: #1d5cff;
@@ -1346,11 +1352,21 @@
   right: 0;
   z-index: 10;
   width: 168px;
+  max-width: calc(100vw - 24px);
   padding: 6px;
   border: 1px solid #dfe5ec;
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 12px 28px rgba(31, 45, 61, 0.14);
+}
+
+.more-menu-wrap-start .more-menu {
+  right: auto;
+  left: 0;
+}
+
+.export-menu {
+  width: 200px;
 }
 
 .more-menu button,
@@ -1378,6 +1394,25 @@
 .more-menu button:disabled {
   color: #9aa6b2;
   cursor: not-allowed;
+}
+
+.export-menu button {
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 52px;
+  gap: 3px;
+}
+
+.export-menu strong {
+  color: #202933;
+  font-size: 13px;
+}
+
+.export-menu span {
+  color: #73808d;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .workbench-status {
@@ -1968,7 +2003,24 @@
   }
 
   .app-shell-panel-collapsed .toolbar-button {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 40px;
+  }
+
+  .app-shell-panel-collapsed .preview-toolbar-actions > .toolbar-button {
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .app-shell-panel-collapsed .preview-toolbar-actions > .more-menu-wrap {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .app-shell-panel-collapsed .preview-toolbar-actions > .more-menu-wrap > .toolbar-button {
+    width: 100%;
   }
 
   .app-shell-panel-collapsed .template-title-line {
@@ -1990,8 +2042,7 @@
   }
 
   .app-shell-panel-collapsed .preview-sidebar-reveal {
-    top: 58px;
-    left: 6px;
+    display: none;
   }
 
   .app-shell-panel-collapsed .invoice-preview-frame {
