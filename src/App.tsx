@@ -37,6 +37,7 @@ import {
   type DesignerFieldSource,
 } from './designerTemplate'
 import {
+  appendImportedTemplates,
   copyTemplate,
   createBlankTemplate,
   loadTemplateWorkspace,
@@ -82,8 +83,21 @@ type DiagnosticEvent = {
 }
 
 type TemplateImportNotice = {
-  tone: 'info' | 'success' | 'error'
+  tone: 'info' | 'success' | 'warning' | 'error'
   message: string
+  details?: TemplateImportDetail[]
+}
+
+type TemplateImportDetail = {
+  fileName: string
+  status: 'success' | 'error'
+  message: string
+}
+
+type TemplateImportProgress = {
+  completed: number
+  currentFileName: string
+  total: number
 }
 
 type RuntimeInfo = {
@@ -141,6 +155,8 @@ const ITEM_COLUMN_LABELS: Record<ItemColumnKey, string> = {
 
 const MAX_DIAGNOSTIC_EVENTS = 8
 const MAX_TEMPLATE_FILE_SIZE_BYTES = 2 * 1024 * 1024
+const MAX_TEMPLATE_IMPORT_FILES = 20
+const MAX_TEMPLATE_IMPORT_TOTAL_BYTES = 4 * 1024 * 1024
 const CHROME_SCHEMA_TIMEOUT_MS = 3000
 const FEISHU_SELECTION_TIMEOUT_MS = 12_000
 const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
@@ -167,6 +183,8 @@ function App() {
   const exportMenuWrapRef = useRef<HTMLDivElement | null>(null)
   const exportMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const restoreExportFocusRef = useRef(false)
+  const templateImportInFlightRef = useRef(false)
+  const templateWorkspaceRef = useRef<TemplateWorkspace | null>(null)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSelectionReloadPending, setIsSelectionReloadPending] = useState(false)
@@ -188,9 +206,11 @@ function App() {
       isChromeExtension ? 'Chrome 打印台正在查找飞书同步数据。' : '插件页面已开始加载。',
     ),
   ])
-  const [templateWorkspace, setTemplateWorkspace] = useState<TemplateWorkspace>(() =>
-    loadTemplateWorkspace(),
-  )
+  const [templateWorkspace, setTemplateWorkspace] = useState<TemplateWorkspace>(() => {
+    const initialWorkspace = loadTemplateWorkspace()
+    templateWorkspaceRef.current = initialWorkspace
+    return initialWorkspace
+  })
 
   useEffect(() => {
     if (busyAction || !restoreExportFocusRef.current) {
@@ -204,6 +224,23 @@ function App() {
   const [pendingDeleteTemplate, setPendingDeleteTemplate] = useState<PrintTemplate | null>(null)
   const [templateNotice, setTemplateNotice] = useState<string | null>(null)
   const [templateImportNotice, setTemplateImportNotice] = useState<TemplateImportNotice | null>(null)
+  const [templateImportProgress, setTemplateImportProgress] =
+    useState<TemplateImportProgress | null>(null)
+  const [isTemplateImporting, setIsTemplateImporting] = useState(false)
+  const [templateImportFocusRequest, setTemplateImportFocusRequest] = useState(0)
+
+  useEffect(() => {
+    templateWorkspaceRef.current = templateWorkspace
+  }, [templateWorkspace])
+
+  useEffect(() => {
+    if (!templateImportFocusRequest || activePanel !== 'templates') {
+      return
+    }
+    document
+      .querySelector<HTMLElement>('[data-template-import-focus-target]')
+      ?.focus()
+  }, [activePanel, templateImportFocusRequest])
 
   const cancelTemplateDelete = useCallback(() => {
     setPendingDeleteTemplate(null)
@@ -449,6 +486,7 @@ function App() {
 
     try {
       saveTemplateWorkspace(nextWorkspace)
+      templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
       setTemplateNotice(
         customTemplates.some(
@@ -459,6 +497,7 @@ function App() {
       )
       addDiagnosticEvent('info', '已自动恢复旧版导入模板。')
     } catch (storageError) {
+      templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
       setMessage('模板已在当前页面修复，但浏览器本地存储失败；刷新后可能需要再次修复。')
       addDiagnosticEvent('error', '修复后的模板没有写入本地存储。', formatUnknownError(storageError))
@@ -572,8 +611,14 @@ function App() {
     pdfStatus === 'online' &&
     !isLoading &&
     !isSelectionReloadPending &&
+    !isTemplateImporting &&
     !busyAction
-  const canPickRecords = !isChromeExtension && Boolean(snapshot) && !isLoading && !wrongTableIssue
+  const canPickRecords =
+    !isChromeExtension &&
+    Boolean(snapshot) &&
+    !isLoading &&
+    !isTemplateImporting &&
+    !wrongTableIssue
 
   async function handlePrint() {
     if (!printPayload || !canRenderPdf) {
@@ -733,6 +778,7 @@ function App() {
   function commitTemplateWorkspace(nextWorkspace: TemplateWorkspace) {
     try {
       saveTemplateWorkspace(nextWorkspace)
+      templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
       return true
     } catch (storageError) {
@@ -742,7 +788,14 @@ function App() {
     }
   }
 
+  function focusTemplateImportFeedback() {
+    setTemplateImportFocusRequest((current) => current + 1)
+  }
+
   function handleUseTemplate(templateId: string) {
+    if (templateImportInFlightRef.current) {
+      return
+    }
     const targetTemplate = templates.find((template) => template.id === templateId)
     if (targetTemplate?.status !== 'ready') {
       if (targetTemplate) {
@@ -777,6 +830,9 @@ function App() {
   }
 
   function handleNewTemplate() {
+    if (templateImportInFlightRef.current) {
+      return
+    }
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(createBlankTemplate()))
     setActivePanel('templates')
@@ -784,6 +840,9 @@ function App() {
   }
 
   function handleCopyTemplate(template: PrintTemplate) {
+    if (templateImportInFlightRef.current) {
+      return
+    }
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(copyTemplate(template)))
     setActivePanel('templates')
@@ -791,6 +850,9 @@ function App() {
   }
 
   function handleEditTemplate(template: PrintTemplate) {
+    if (templateImportInFlightRef.current) {
+      return
+    }
     setTemplateImportNotice(null)
     setEditingTemplate(makeDesignerReadyTemplate(template.isBuiltIn ? copyTemplate(template) : template))
     setActivePanel('templates')
@@ -889,6 +951,9 @@ function App() {
   }
 
   function requestDeleteTemplate(template: PrintTemplate, trigger: HTMLButtonElement) {
+    if (templateImportInFlightRef.current) {
+      return
+    }
     if (template.isBuiltIn) {
       setMessage('系统测试模板不能删除；可以复制后修改自己的副本。')
       return
@@ -916,51 +981,157 @@ function App() {
     }, 0)
   }
 
-  async function handleImportTemplateFile(file: File) {
-    setTemplateImportNotice({ tone: 'info', message: `正在读取“${file.name}”…` })
+  async function handleImportTemplateFiles(files: File[]) {
+    if (!files.length || templateImportInFlightRef.current) {
+      return
+    }
+
+    setActivePanel('templates')
+    setOpenToolbarMenu(null)
     setMessage(null)
+    if (window.matchMedia('(max-width: 859px)').matches) {
+      setIsControlPanelCollapsed(true)
+    }
+
+    if (files.length > MAX_TEMPLATE_IMPORT_FILES) {
+      const nextMessage = `一次最多导入 ${MAX_TEMPLATE_IMPORT_FILES} 个模板，请分批选择。`
+      setTemplateImportNotice({ tone: 'error', message: nextMessage })
+      addDiagnosticEvent('error', '批量模板导入未开始。', nextMessage)
+      focusTemplateImportFeedback()
+      return
+    }
+
+    const totalBytes = files.reduce((total, file) => total + file.size, 0)
+    if (totalBytes > MAX_TEMPLATE_IMPORT_TOTAL_BYTES) {
+      const nextMessage = '本批模板文件合计不能超过 4 MB，请分批导入。'
+      setTemplateImportNotice({ tone: 'error', message: nextMessage })
+      addDiagnosticEvent('error', '批量模板导入未开始。', nextMessage)
+      focusTemplateImportFeedback()
+      return
+    }
+
+    templateImportInFlightRef.current = true
+    setIsTemplateImporting(true)
+    setTemplateImportProgress({ completed: 0, currentFileName: files[0]?.name ?? '', total: files.length })
+    setTemplateImportNotice({
+      tone: 'info',
+      message: `正在导入 ${files.length} 个模板，请不要关闭插件。`,
+    })
+    focusTemplateImportFeedback()
+
+    const parsedEntries: { fileName: string; template: PrintTemplate }[] = []
+    const failedDetails: TemplateImportDetail[] = []
 
     try {
-      if (!/\.(txt|json)$/i.test(file.name)) {
-        throw new Error('请选择旧版导出的 .txt 或 .json 模板文件。')
-      }
-      if (file.size === 0) {
-        throw new Error('模板文件是空的。')
-      }
-      if (file.size > MAX_TEMPLATE_FILE_SIZE_BYTES) {
-        throw new Error('模板文件不能超过 2 MB。')
+      for (const [index, file] of files.entries()) {
+        setTemplateImportProgress({
+          completed: index,
+          currentFileName: file.name,
+          total: files.length,
+        })
+
+        try {
+          if (!/\.(txt|json)$/i.test(file.name)) {
+            throw new Error('请选择旧版导出的 .txt 或 .json 模板文件。')
+          }
+          if (file.size === 0) {
+            throw new Error('模板文件是空的。')
+          }
+          if (file.size > MAX_TEMPLATE_FILE_SIZE_BYTES) {
+            throw new Error('单个模板文件不能超过 2 MB。')
+          }
+
+          const rawText = await file.text()
+          const importedTemplate = suggestImportedTemplateBindings(
+            importTemplateFromText(file.name, rawText),
+            trustedDataSourceSchema,
+            snapshot?.context.mainTableName,
+            activeTemplate,
+            DEFAULT_TEST_TEMPLATE,
+          )
+          parsedEntries.push({
+            fileName: file.name,
+            template: {
+              ...importedTemplate,
+              status: 'draft',
+            },
+          })
+        } catch (error) {
+          failedDetails.push({
+            fileName: file.name,
+            status: 'error',
+            message:
+              error instanceof Error
+                ? error.message
+                : '无法读取这个模板文件，请确认它来自旧版模板导出。',
+          })
+        }
+
+        setTemplateImportProgress({
+          completed: index + 1,
+          currentFileName: file.name,
+          total: files.length,
+        })
       }
 
-      const rawText = await file.text()
-      const importedTemplate = suggestImportedTemplateBindings(
-        importTemplateFromText(file.name, rawText),
-        trustedDataSourceSchema,
-        snapshot?.context.mainTableName,
-        activeTemplate,
-        DEFAULT_TEST_TEMPLATE,
+      if (!parsedEntries.length) {
+        const nextMessage = `没有导入模板，${failedDetails.length} 个文件均未通过检查。`
+        setTemplateImportNotice({ tone: 'error', message: nextMessage, details: failedDetails })
+        setMessage(nextMessage)
+        addDiagnosticEvent('error', '批量模板导入全部失败。', nextMessage)
+        return
+      }
+
+      const currentWorkspace = templateWorkspaceRef.current ?? templateWorkspace
+      const plannedImport = appendImportedTemplates(
+        currentWorkspace,
+        parsedEntries.map((entry) => entry.template),
       )
-      setEditingTemplate(makeDesignerReadyTemplate(importedTemplate))
-      setActivePanel('templates')
-      const missingBindings = getMissingTemplateDataSourceBindings(
-        importedTemplate,
-        trustedDataSourceSchema,
+      if (!commitTemplateWorkspace(plannedImport.workspace)) {
+        const nextMessage = '模板已经读取，但浏览器本地存储失败，本批一个也没有保存。'
+        setTemplateImportNotice({
+          tone: 'error',
+          message: nextMessage,
+          details: [
+            ...parsedEntries.map((entry) => ({
+              fileName: entry.fileName,
+              status: 'error' as const,
+              message: '本批未保存。',
+            })),
+            ...failedDetails,
+          ],
+        })
+        return
+      }
+
+      const successDetails: TemplateImportDetail[] = plannedImport.importedTemplates.map(
+        (template, index) => ({
+          fileName: parsedEntries[index]?.fileName ?? template.sourceFile ?? template.name,
+          status: 'success',
+          message: `已保存为草稿“${template.name}”。`,
+        }),
       )
-      const successMessage = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
-        ? `已读取“${importedTemplate.name}”并打开编辑器。飞书字段结构尚未读取完成，可以先保存草稿，稍后再确认数据源。`
-        : missingBindings.length
-          ? `已读取“${importedTemplate.name}”并打开编辑器。请补齐${missingBindings.join('、')}后保存；未保存前不会加入“我的模板”。`
-        : `已读取“${importedTemplate.name}”，并自动匹配当前 Base 的主表、明细表和关联字段。检查无误后点“保存并使用”。`
-      setTemplateImportNotice({ tone: 'success', message: successMessage })
-      addDiagnosticEvent('info', '模板文件已导入。', `文件：${file.name}`)
-    } catch (error) {
-      const nextMessage =
-        error instanceof Error
-          ? error.message
-          : '无法读取这个模板文件，请确认它来自旧版模板导出。'
-      setActivePanel('templates')
-      setTemplateImportNotice({ tone: 'error', message: nextMessage })
-      setMessage(nextMessage)
-      addDiagnosticEvent('error', '模板文件解析失败。', formatUnknownError(error))
+      const successCount = successDetails.length
+      const failedCount = failedDetails.length
+      const nextMessage = failedCount
+        ? `已处理 ${files.length} 个模板：成功 ${successCount} 个，失败 ${failedCount} 个。成功项已保存为草稿。`
+        : `已导入 ${successCount} 个模板，全部保存为草稿。请逐个点“继续设置”检查数据源。`
+      setTemplateImportNotice({
+        tone: failedCount ? 'warning' : 'success',
+        message: nextMessage,
+        details: [...successDetails, ...failedDetails],
+      })
+      setTemplateNotice(`已把 ${successCount} 个模板加入“我的模板”。`)
+      addDiagnosticEvent(
+        failedCount ? 'warning' : 'info',
+        '批量模板导入完成。',
+        `成功 ${successCount} 个，失败 ${failedCount} 个。`,
+      )
+    } finally {
+      templateImportInFlightRef.current = false
+      setIsTemplateImporting(false)
+      setTemplateImportProgress(null)
+      focusTemplateImportFeedback()
     }
   }
 
@@ -1032,9 +1203,10 @@ function App() {
         <TemplateSidebar
           activePanel={activePanel}
           activeTemplateId={activeTemplate.id}
+          isTemplateImporting={isTemplateImporting}
           onCollapse={() => setIsControlPanelCollapsed(true)}
           onDeleteTemplate={requestDeleteTemplate}
-          onImportTemplateFile={(file) => void handleImportTemplateFile(file)}
+          onImportTemplateFiles={(files) => void handleImportTemplateFiles(files)}
           onNewTemplate={handleNewTemplate}
           onSearchChange={setTemplateSearch}
           onUseTemplate={handleUseTemplate}
@@ -1071,6 +1243,7 @@ function App() {
         <header className="app-tabs" aria-label="插件导航">
           <button
             className={activePanel === 'print' ? 'app-tab app-tab-active' : 'app-tab'}
+            disabled={isTemplateImporting}
             onClick={() => setActivePanel('print')}
             type="button"
           >
@@ -1079,6 +1252,7 @@ function App() {
           <button
             className={activePanel === 'templates' ? 'app-tab app-tab-active' : 'app-tab'}
             data-template-delete-focus-fallback
+            disabled={isTemplateImporting}
             onClick={() => setActivePanel('templates')}
             type="button"
           >
@@ -1092,7 +1266,12 @@ function App() {
               <StatusChip label="记录" />
               <h2>{previewTemplate.name}</h2>
               <span>A4 / 纵向</span>
-              <button className="text-link-button" onClick={() => handleEditTemplate(activeTemplate)} type="button">
+              <button
+                className="text-link-button"
+                disabled={isTemplateImporting}
+                onClick={() => handleEditTemplate(activeTemplate)}
+                type="button"
+              >
                 修改
               </button>
             </div>
@@ -1100,7 +1279,7 @@ function App() {
               <div className="preview-data-links">
                 <button
                   className="batch-link"
-                  disabled={isLoading}
+                  disabled={isLoading || isTemplateImporting}
                   onClick={() => void loadCurrentSelection()}
                   type="button"
                 >
@@ -1132,7 +1311,7 @@ function App() {
               <>
                 <button
                   className="toolbar-button"
-                  disabled={isLoading}
+                  disabled={isLoading || isTemplateImporting}
                   onClick={() => void loadCurrentSelection()}
                   type="button"
                 >
@@ -1149,7 +1328,7 @@ function App() {
                 aria-expanded={openToolbarMenu === 'more'}
                 aria-haspopup="menu"
                 className="toolbar-button"
-                disabled={Boolean(busyAction)}
+                disabled={Boolean(busyAction) || isTemplateImporting}
                 onClick={() => setOpenToolbarMenu((current) => (current === 'more' ? null : 'more'))}
                 onKeyDown={(event) => handleToolbarTriggerKeyDown(event, 'more')}
                 ref={moreMenuTriggerRef}
@@ -1255,7 +1434,7 @@ function App() {
             </div>
             <button
               className="toolbar-button"
-              disabled={Boolean(busyAction)}
+              disabled={Boolean(busyAction) || isTemplateImporting}
               onClick={() => handleEditTemplate(activeTemplate)}
               type="button"
             >
@@ -1375,15 +1554,17 @@ function App() {
             <TemplateConsole
               activeTemplateId={activeTemplate.id}
               editingTemplate={editingTemplate}
+              isTemplateImporting={isTemplateImporting}
               onCancelEdit={() => setEditingTemplate(null)}
               onCopyTemplate={handleCopyTemplate}
               onDeleteTemplate={requestDeleteTemplate}
               onEditTemplate={handleEditTemplate}
-              onImportTemplateFile={(file) => void handleImportTemplateFile(file)}
+              onImportTemplateFiles={(files) => void handleImportTemplateFiles(files)}
               onNewTemplate={handleNewTemplate}
               onSaveTemplate={handleSaveTemplate}
               onUseTemplate={handleUseTemplate}
               templateImportNotice={templateImportNotice}
+              templateImportProgress={templateImportProgress}
               templates={templates}
               dataSourceSchema={trustedDataSourceSchema}
             />
@@ -1458,9 +1639,10 @@ function getOutputActionLabel(action: OutputAction): string {
 function TemplateSidebar({
   activePanel,
   activeTemplateId,
+  isTemplateImporting,
   onCollapse,
   onDeleteTemplate,
-  onImportTemplateFile,
+  onImportTemplateFiles,
   onNewTemplate,
   onSearchChange,
   onUseTemplate,
@@ -1469,9 +1651,10 @@ function TemplateSidebar({
 }: {
   activePanel: ActivePanel
   activeTemplateId: string
+  isTemplateImporting: boolean
   onCollapse: () => void
   onDeleteTemplate: (template: PrintTemplate, trigger: HTMLButtonElement) => void
-  onImportTemplateFile: (file: File) => void
+  onImportTemplateFiles: (files: File[]) => void
   onNewTemplate: () => void
   onSearchChange: (value: string) => void
   onUseTemplate: (templateId: string) => void
@@ -1498,6 +1681,7 @@ function TemplateSidebar({
             ? 'template-nav-item template-nav-item-active'
             : 'template-nav-item'
         }
+        disabled={isTemplateImporting}
         onClick={() => onUseTemplate(template.id)}
         title={`${DOCUMENT_KIND_LABELS[template.documentKind]} · ${template.name}`}
         type="button"
@@ -1513,6 +1697,7 @@ function TemplateSidebar({
         <button
           aria-label={`删除自定义模板：${template.name}`}
           className="template-nav-delete"
+          disabled={isTemplateImporting}
           onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
           title={`删除「${template.name}」`}
           type="button"
@@ -1580,28 +1765,33 @@ function TemplateSidebar({
 
       <div className="template-sidebar-footer" role="group" aria-label="模板操作">
         <button
+          aria-busy={isTemplateImporting}
           className="sidebar-import-button"
+          disabled={isTemplateImporting}
           onClick={() => sidebarUploadRef.current?.click()}
-          title="导入旧版 .txt 或 .json 模板文件"
+          title="可一次导入多个旧版 .txt 或 .json 模板文件"
           type="button"
         >
-          导入旧模板
+          {isTemplateImporting ? '正在导入…' : '批量导入模板'}
         </button>
         <input
           accept=".txt,.json"
+          disabled={isTemplateImporting}
           hidden
+          multiple
           ref={sidebarUploadRef}
           type="file"
           onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) {
-              onImportTemplateFile(file)
+            const files = Array.from(event.currentTarget.files ?? [])
+            if (files.length) {
+              onImportTemplateFiles(files)
             }
             event.currentTarget.value = ''
           }}
         />
         <button
           className={activePanel === 'templates' ? 'sidebar-create-button sidebar-create-button-muted' : 'sidebar-create-button'}
+          disabled={isTemplateImporting}
           onClick={onNewTemplate}
           type="button"
         >
@@ -1697,29 +1887,33 @@ function TemplateConsole({
   activeTemplateId,
   dataSourceSchema,
   editingTemplate,
+  isTemplateImporting,
   onCancelEdit,
   onCopyTemplate,
   onDeleteTemplate,
   onEditTemplate,
-  onImportTemplateFile,
+  onImportTemplateFiles,
   onNewTemplate,
   onSaveTemplate,
   onUseTemplate,
   templateImportNotice,
+  templateImportProgress,
   templates,
 }: {
   activeTemplateId: string
   dataSourceSchema: DataSourceSchema | null
   editingTemplate: PrintTemplate | null
+  isTemplateImporting: boolean
   onCancelEdit: () => void
   onCopyTemplate: (template: PrintTemplate) => void
   onDeleteTemplate: (template: PrintTemplate, trigger: HTMLButtonElement) => void
   onEditTemplate: (template: PrintTemplate) => void
-  onImportTemplateFile: (file: File) => void
+  onImportTemplateFiles: (files: File[]) => void
   onNewTemplate: () => void
   onSaveTemplate: (template: PrintTemplate) => void
   onUseTemplate: (templateId: string) => void
   templateImportNotice: TemplateImportNotice | null
+  templateImportProgress: TemplateImportProgress | null
   templates: PrintTemplate[]
 }) {
   const templateUploadRef = useRef<HTMLInputElement>(null)
@@ -1735,44 +1929,82 @@ function TemplateConsole({
           <PanelTitle title="导入与管理模板" />
           <div className="header-actions">
             <button
+              aria-busy={isTemplateImporting}
               className="small-button file-button"
+              disabled={isTemplateImporting}
               onClick={() => templateUploadRef.current?.click()}
               type="button"
             >
-              导入模板文件
+              {isTemplateImporting ? '正在导入…' : '批量导入模板'}
             </button>
             <input
               accept=".txt,.json"
-              aria-hidden="true"
-              className="visually-hidden"
+              disabled={isTemplateImporting}
+              hidden
+              multiple
               ref={templateUploadRef}
-              tabIndex={-1}
               type="file"
               onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) {
-                  onImportTemplateFile(file)
+                const files = Array.from(event.currentTarget.files ?? [])
+                if (files.length) {
+                  onImportTemplateFiles(files)
                 }
                 event.currentTarget.value = ''
               }}
             />
-            <button className="small-button" onClick={onNewTemplate} type="button">
+            <button className="small-button" disabled={isTemplateImporting} onClick={onNewTemplate} type="button">
               新建空白模板
             </button>
           </div>
         </div>
         <p className="hint-text">
-          支持旧版飞书导出的 .txt 模板，也支持兼容的 .json 文件。文件只在当前浏览器读取，不会上传到服务器。
+          可一次选择多个旧版 .txt 或兼容 .json 模板。一次最多 20 个，单个最多 2 MB，合计最多 4 MB；文件只在当前浏览器读取。
         </p>
         <p className="hint-text">
-          系统只保留一个测试模板。正式使用请导入自己的模板文件；导入后选择主表、明细表和关联字段，再保存模板。
+          成功项会一次性保存为草稿，不切换当前打印模板。导入后逐个点“继续设置”，确认主表、明细表和关联字段。
         </p>
+        {templateImportProgress ? (
+          <div
+            aria-atomic="true"
+            aria-busy="true"
+            aria-live="polite"
+            className="template-import-progress"
+            data-template-import-focus-target
+            role="status"
+            tabIndex={-1}
+          >
+            <strong>
+              正在导入 {Math.min(templateImportProgress.completed + 1, templateImportProgress.total)}/
+              {templateImportProgress.total}
+            </strong>
+            <progress max={templateImportProgress.total} value={templateImportProgress.completed} />
+            <span>{templateImportProgress.currentFileName}</span>
+          </div>
+        ) : null}
         {templateImportNotice ? (
           <div
             className={`template-import-notice template-import-notice-${templateImportNotice.tone}`}
+            data-template-import-focus-target
             role={templateImportNotice.tone === 'error' ? 'alert' : 'status'}
+            tabIndex={-1}
           >
-            {templateImportNotice.message}
+            <p>{templateImportNotice.message}</p>
+            {templateImportNotice.details?.length ? (
+              <details className="template-import-details">
+                <summary>查看每个文件的结果</summary>
+                <ul>
+                  {templateImportNotice.details.map((detail, index) => (
+                    <li
+                      className={`template-import-detail template-import-detail-${detail.status}`}
+                      key={`${detail.fileName}-${index}`}
+                    >
+                      <strong>{detail.fileName}</strong>
+                      <span>{detail.status === 'success' ? '成功' : '失败'}：{detail.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
           </div>
         ) : null}
         {!customTemplates.length ? (
@@ -1784,13 +2016,15 @@ function TemplateConsole({
             <div className="template-import-empty-actions">
               <button
                 className="small-button small-button-accent"
+                disabled={isTemplateImporting}
                 onClick={() => templateUploadRef.current?.click()}
                 type="button"
               >
-                选择模板文件
+                选择多个模板文件
               </button>
               <button
                 className="small-button"
+                disabled={isTemplateImporting}
                 onClick={() => onCopyTemplate(activeTemplate)}
                 type="button"
               >
@@ -1822,19 +2056,20 @@ function TemplateConsole({
                 <p>{template.mainTableName || '未设置主表'}</p>
               </div>
               <div className="template-row-actions">
-                <button onClick={() => onUseTemplate(template.id)} type="button">
+                <button disabled={isTemplateImporting} onClick={() => onUseTemplate(template.id)} type="button">
                   {template.status === 'ready' ? '使用' : '继续设置'}
                 </button>
-                <button onClick={() => onEditTemplate(template)} type="button">
+                <button disabled={isTemplateImporting} onClick={() => onEditTemplate(template)} type="button">
                   编辑
                 </button>
-                <button onClick={() => onCopyTemplate(template)} type="button">
+                <button disabled={isTemplateImporting} onClick={() => onCopyTemplate(template)} type="button">
                   复制
                 </button>
                 {!template.isBuiltIn ? (
                   <button
                     aria-label={`删除自定义模板：${template.name}`}
                     className="danger-button"
+                    disabled={isTemplateImporting}
                     onClick={(event) => onDeleteTemplate(template, event.currentTarget)}
                     type="button"
                   >

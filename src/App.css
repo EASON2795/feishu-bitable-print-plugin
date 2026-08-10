@@ -255,6 +255,21 @@
   background: #1550de;
 }
 
+.sidebar-import-button:disabled,
+.sidebar-create-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.template-nav-item:disabled,
+.template-nav-delete:disabled,
+.app-tab:disabled,
+.text-link-button:disabled,
+.template-row-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .sidebar-create-button {
   border: 1px solid #cfd8e3;
   color: #425466;
@@ -531,6 +546,12 @@
   background: #f4f8fb;
 }
 
+.small-button:focus-visible,
+.template-row-actions button:focus-visible {
+  outline: 2px solid rgb(21 94 239 / 28%);
+  outline-offset: 2px;
+}
+
 .small-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -611,6 +632,10 @@
   overflow-wrap: anywhere;
 }
 
+.template-import-notice > p {
+  margin: 0;
+}
+
 .template-import-notice-success {
   color: #0c4d39;
   border-color: #8ac9b3;
@@ -621,6 +646,86 @@
   color: #8b2c25;
   border-color: #e5aca6;
   background: #fff3f1;
+}
+
+.template-import-notice-warning {
+  color: #704609;
+  border-color: #e5c072;
+  background: #fff8e8;
+}
+
+.template-import-progress {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(120px, 1fr);
+  gap: 6px 12px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #a9bdd0;
+  border-radius: 8px;
+  color: #263b4b;
+  background: #f5f8fb;
+  font-size: 13px;
+}
+
+.template-import-progress progress {
+  width: 100%;
+  height: 8px;
+  accent-color: #1d5cff;
+}
+
+.template-import-progress span {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: #63727c;
+}
+
+.template-import-details {
+  margin-top: 8px;
+}
+
+.template-import-details summary {
+  width: fit-content;
+  color: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.template-import-details summary:focus-visible {
+  outline: 2px solid rgb(21 94 239 / 28%);
+  outline-offset: 2px;
+}
+
+.template-import-details ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.template-import-detail {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgb(121 142 160 / 28%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 64%);
+}
+
+.template-import-detail strong,
+.template-import-detail span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.template-import-detail-success span {
+  color: #0c4d39;
+}
+
+.template-import-detail-error span {
+  color: #8b2c25;
 }
 
 .template-import-empty {
@@ -2085,6 +2190,16 @@
   .template-import-empty-actions .small-button {
     width: 100%;
     min-height: 40px;
+  }
+
+  .template-import-progress,
+  .template-import-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .template-import-progress progress,
+  .template-import-progress span {
+    grid-column: 1;
   }
 
   .template-row-actions {

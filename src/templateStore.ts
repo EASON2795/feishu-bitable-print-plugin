@@ -116,6 +116,47 @@ export function mergeTemplates(customTemplates: PrintTemplate[]): PrintTemplate[
   return [...TEMPLATE_REGISTRY, ...customTemplates]
 }
 
+export function appendImportedTemplates(
+  workspace: TemplateWorkspace,
+  candidates: PrintTemplate[],
+): { workspace: TemplateWorkspace; importedTemplates: PrintTemplate[] } {
+  const usedIds = new Set(
+    mergeTemplates(workspace.customTemplates).map((template) => template.id),
+  )
+  const usedNames = new Set(
+    mergeTemplates(workspace.customTemplates).map((template) => normalizeTemplateName(template.name)),
+  )
+  const importedTemplates = candidates.map((candidate) => {
+    const name = makeUniqueTemplateName(candidate.name, usedNames)
+    const id = makeUniqueTemplateId(candidate.documentKind, usedIds)
+    const now = new Date().toISOString()
+    const importedTemplate: PrintTemplate = {
+      ...candidate,
+      id,
+      name,
+      status: 'draft',
+      isBuiltIn: false,
+      officialTemplate: cloneOfficialTemplate(candidate.officialTemplate),
+      designOverrides: cloneDesignOverrides(candidate.designOverrides),
+      printSettings: clonePrintSettings(candidate.printSettings),
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    usedIds.add(id)
+    usedNames.add(normalizeTemplateName(name))
+    return importedTemplate
+  })
+
+  return {
+    workspace: {
+      ...workspace,
+      customTemplates: [...workspace.customTemplates, ...importedTemplates],
+    },
+    importedTemplates,
+  }
+}
+
 export function createBlankTemplate(): PrintTemplate {
   const now = new Date().toISOString()
 
@@ -251,6 +292,36 @@ function makeTemplateId(prefix: string): string {
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`
 
   return `${prefix}-${random}`
+}
+
+function makeUniqueTemplateId(prefix: string, usedIds: Set<string>): string {
+  const baseId = makeTemplateId(`uploaded-${prefix}`)
+  let nextId = baseId
+  let suffix = 2
+
+  while (usedIds.has(nextId)) {
+    nextId = `${baseId}-${suffix}`
+    suffix += 1
+  }
+
+  return nextId
+}
+
+function makeUniqueTemplateName(name: string, usedNames: Set<string>): string {
+  const baseName = name.trim() || '未命名单据模板'
+  let nextName = baseName
+  let suffix = 2
+
+  while (usedNames.has(normalizeTemplateName(nextName))) {
+    nextName = `${baseName}（${suffix}）`
+    suffix += 1
+  }
+
+  return nextName
+}
+
+function normalizeTemplateName(name: string): string {
+  return name.trim().normalize('NFKC').toLocaleLowerCase('zh-CN')
 }
 
 function cloneOfficialTemplate(template: PrintTemplate['officialTemplate']) {
