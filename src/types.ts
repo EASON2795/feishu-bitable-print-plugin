@@ -190,6 +190,7 @@ export type PiPrintItem = Record<PiItemFieldKey, string> & {
 export type OfficialPrintValue = {
   text: string
   imageUrls?: string[]
+  imageLoadFailed?: boolean
 }
 
 export type OfficialPrintDocumentData = {

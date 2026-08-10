@@ -537,6 +537,10 @@ function renderOfficialAttachment(
     </div>`
   }
 
+  if (value.imageLoadFailed) {
+    return '<span class="official-empty-image">照片读取失败，请重新读取</span>'
+  }
+
   return value.text ? `<span>${formatInline(value.text)}</span>` : '<span class="official-empty-image">无图片</span>'
 }
 

@@ -142,6 +142,7 @@ const ITEM_COLUMN_LABELS: Record<ItemColumnKey, string> = {
 const MAX_DIAGNOSTIC_EVENTS = 8
 const MAX_TEMPLATE_FILE_SIZE_BYTES = 2 * 1024 * 1024
 const CHROME_SCHEMA_TIMEOUT_MS = 3000
+const FEISHU_SELECTION_TIMEOUT_MS = 12_000
 const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
 const DATA_SOURCE_CONFIRMATION_LABEL = '当前 Base 数据源确认'
 const FONT_OPTIONS = [
@@ -309,7 +310,10 @@ function App() {
     )
 
     try {
-      const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate), 6000)
+      const nextSnapshot = await withTimeout(
+        loadPiSnapshot(activeTemplate),
+        FEISHU_SELECTION_TIMEOUT_MS,
+      )
       if (isStaleSelectionLoad()) {
         return
       }
@@ -701,7 +705,10 @@ function App() {
       if (isStaleSelectionLoad()) {
         return
       }
-      const nextSnapshot = await withTimeout(loadPiSnapshot(activeTemplate, recordIds), 6000)
+      const nextSnapshot = await withTimeout(
+        loadPiSnapshot(activeTemplate, recordIds),
+        FEISHU_SELECTION_TIMEOUT_MS,
+      )
       if (isStaleSelectionLoad()) {
         return
       }

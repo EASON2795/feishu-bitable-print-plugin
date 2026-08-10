@@ -1,4 +1,4 @@
-import { bitable, ui, viewCheckers } from '@lark-base-open/js-sdk'
+import { bitable, ImageQuality, ui, viewCheckers } from '@lark-base-open/js-sdk'
 import type { IFieldMeta, IOpenCellValue, ITable, IView } from '@lark-base-open/js-sdk'
 import {
   DOCUMENT_KIND_LABELS,
@@ -795,10 +795,99 @@ async function safeGetOfficialValue(
     safeGetCellValue(table, fieldId, recordId),
   ])
 
+  const imageAttachments = extractImageAttachments(rawValue)
+  const attachmentResult = imageAttachments.length
+    ? await safeGetCellAttachmentImages(table, imageAttachments, fieldId, recordId)
+    : { imageSources: [], failed: false }
+
   return {
     text,
-    imageUrls: extractImageUrls(rawValue),
+    imageUrls: [...extractImageUrls(rawValue), ...attachmentResult.imageSources],
+    imageLoadFailed: attachmentResult.failed,
   }
+}
+
+async function safeGetCellAttachmentImages(
+  table: ITable,
+  attachments: ImageAttachmentRef[],
+  fieldId: string,
+  recordId: string,
+): Promise<{ imageSources: string[]; failed: boolean }> {
+  const tokens = attachments.map((attachment) => attachment.token)
+
+  try {
+    const thumbnails = await table.getCellThumbnailUrls(
+      tokens,
+      fieldId,
+      recordId,
+      ImageQuality.MAX,
+    )
+    const imageSources = thumbnails.flatMap((thumbnail, index) => {
+      const source = normalizeAttachmentImageSource(thumbnail, attachments[index]?.mimeType)
+      return source ? [source] : []
+    })
+    if (imageSources.length === attachments.length) {
+      return { imageSources, failed: false }
+    }
+  } catch {
+    // Fall back to the temporary original-file URLs below.
+  }
+
+  try {
+    const urls = await table.getCellAttachmentUrls(tokens, fieldId, recordId)
+    const imageSources = urls.filter(
+      (url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url),
+    )
+    return {
+      imageSources,
+      failed: imageSources.length !== attachments.length,
+    }
+  } catch {
+    return { imageSources: [], failed: true }
+  }
+}
+
+function normalizeAttachmentImageSource(source: unknown, mimeType?: string): string | null {
+  if (typeof source !== 'string') {
+    return null
+  }
+
+  const trimmed = source.trim()
+  if (/^(?:data:image\/|https?:\/\/)/i.test(trimmed)) {
+    return trimmed
+  }
+
+  const compactBase64 = trimmed.replace(/\s+/g, '')
+  if (compactBase64.length < 64 || !/^[a-z\d+/]+={0,2}$/i.test(compactBase64)) {
+    return null
+  }
+
+  const safeMimeType =
+    inferBase64ImageMimeType(compactBase64) ||
+    (mimeType?.startsWith('image/') ? mimeType : 'image/jpeg')
+  return `data:${safeMimeType};base64,${compactBase64}`
+}
+
+function inferBase64ImageMimeType(base64: string): string | null {
+  if (base64.startsWith('/9j/')) {
+    return 'image/jpeg'
+  }
+  if (base64.startsWith('iVBORw0KGgo')) {
+    return 'image/png'
+  }
+  if (base64.startsWith('R0lGOD')) {
+    return 'image/gif'
+  }
+  if (base64.startsWith('UklGR')) {
+    return 'image/webp'
+  }
+  if (base64.startsWith('Qk')) {
+    return 'image/bmp'
+  }
+  if (base64.startsWith('PHN2Zy') || base64.startsWith('PD94bWwg')) {
+    return 'image/svg+xml'
+  }
+  return null
 }
 
 async function safeGetCellValue(
@@ -915,6 +1004,52 @@ function extractImageUrls(value: unknown): string[] {
   return Array.from(urls)
 }
 
+type ImageAttachmentRef = {
+  token: string
+  mimeType: string
+}
+
+function extractImageAttachments(value: unknown): ImageAttachmentRef[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return []
+    }
+
+    const attachment = item as Record<string, unknown>
+    const token = typeof attachment.token === 'string' ? attachment.token : ''
+    const name = typeof attachment.name === 'string' ? attachment.name : ''
+    const type = typeof attachment.type === 'string' ? attachment.type.toLowerCase() : ''
+    const mimeType = inferImageMimeType(type, name)
+
+    return token && mimeType ? [{ token, mimeType }] : []
+  })
+}
+
+function inferImageMimeType(type: string, name: string): string | null {
+  if (type.startsWith('image/')) {
+    return type
+  }
+
+  const mimeTypes: Record<string, string> = {
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    gif: 'image/gif',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    'svg+xml': 'image/svg+xml',
+    webp: 'image/webp',
+  }
+  const typeExtension = type.replace(/^\./, '')
+  const nameExtension = name.match(/\.([a-z\d+]+)$/i)?.[1]?.toLowerCase() || ''
+  return mimeTypes[typeExtension] ?? mimeTypes[nameExtension] ?? null
+}
+
 function sortItems(items: PiPrintItem[]): PiPrintItem[] {
   return [...items].sort((left, right) => {
     const leftSort = parseSortNo(left.sortNo)
@@ -1014,6 +1149,20 @@ function addOfficialDocumentIssues(
       severity: 'blocker',
       code: 'official-no-items',
       message: `模板动态明细「${dynamicRoot}」没有关联记录。`,
+      recordId,
+    })
+  }
+
+  const hasImageLoadFailure = [
+    ...Object.values(official.fields),
+    ...Object.values(official.itemGroups).flatMap((rows) => rows.flatMap(Object.values)),
+  ].some((value) => value.imageLoadFailed)
+
+  if (hasImageLoadFailure) {
+    issues.push({
+      severity: 'warning',
+      code: 'official-attachment-image-unavailable',
+      message: '有照片附件读取失败，请确认当前账号可以查看附件，然后重新读取记录。',
       recordId,
     })
   }
