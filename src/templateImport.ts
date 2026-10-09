@@ -50,6 +50,11 @@ type OfficialColumn = {
 type OfficialBlock = {
   type?: number
   content?: OfficialParagraph[]
+  imageConfig?: {
+    file?: {
+      url?: string
+    }
+  }
   table?: OfficialTable
 }
 
@@ -83,6 +88,7 @@ type OfficialDynamicRow = {
 export function importTemplateFromText(fileName: string, rawText: string): PrintTemplate {
   const exported = parseOfficialExport(rawText)
   const content = parseOfficialContent(exported.content)
+  const pendingStaticImageCount = clearImportedStaticImageLinks(content)
   const base = DEFAULT_TEST_TEMPLATE
   const settings = clonePrintSettings(base.printSettings)
   const pages = content?.document?.pages ?? []
@@ -164,7 +170,7 @@ export function importTemplateFromText(fileName: string, rawText: string): Print
     id: `uploaded-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     name: title,
     documentKind: inferDocumentKind(settings.text.documentTitle),
-    description: `从文件 ${fileName} 导入。`,
+    description: `从文件 ${fileName} 导入。${pendingStaticImageCount ? ` ${pendingStaticImageCount} 张固定图片需要手动上传。` : ''}`,
     status: 'draft',
     isBuiltIn: false,
     mainTableName: '',
@@ -179,6 +185,38 @@ export function importTemplateFromText(fileName: string, rawText: string): Print
     createdAt: now,
     updatedAt: now,
   }
+}
+
+function clearImportedStaticImageLinks(content: OfficialTemplateContent): number {
+  let clearedCount = 0
+
+  content.document?.pages?.forEach((page) => {
+    page.rows?.forEach((row) => {
+      row.columns?.forEach((column) => {
+        column.blocks?.forEach((block) => {
+          if (!block.imageConfig && block.type !== 9) {
+            return
+          }
+
+          const source = block.imageConfig?.file?.url?.trim()
+          if (!source) {
+            return
+          }
+
+          block.imageConfig = {
+            ...block.imageConfig,
+            file: {
+              ...block.imageConfig?.file,
+              url: '',
+            },
+          }
+          clearedCount += 1
+        })
+      })
+    })
+  })
+
+  return clearedCount
 }
 
 function parseOfficialExport(rawText: string): OfficialTemplateExport {

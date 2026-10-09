@@ -7,6 +7,7 @@ import {
   OFFICIAL_LAYOUT_TEMPLATE_ID,
   type OfficialTemplateSummary,
   type PrintTemplate,
+  type TemplateStaticImageAsset,
   type TemplateFieldMapping,
 } from './types'
 
@@ -201,6 +202,70 @@ export function updateDesignTargetText(
     ...nextTemplate,
     officialTemplate: summarizeOfficialTemplate(nextTemplate.name, content),
   }
+}
+
+export function updateStaticTemplateImage(
+  template: PrintTemplate,
+  designId: string,
+  asset: TemplateStaticImageAsset,
+): PrintTemplate {
+  const editable = makeDesignerReadyTemplate(template)
+  if (!editable.officialTemplate || !findStaticImageBlock(editable, designId)) {
+    return editable
+  }
+
+  return {
+    ...editable,
+    designOverrides: {
+      ...editable.designOverrides,
+      staticImages: {
+        ...editable.designOverrides?.staticImages,
+        [designId]: asset,
+      },
+    },
+  }
+}
+
+export function getMissingStaticTemplateImageCount(template: PrintTemplate): number {
+  const content = template.officialTemplate?.content as DesignerContent | undefined
+  let missingCount = 0
+
+  content?.document?.pages?.forEach((page, pageIndex) => {
+    page.rows?.forEach((row, rowIndex) => {
+      row.columns?.forEach((column, columnIndex) => {
+        column.blocks?.forEach((block, blockIndex) => {
+          if (block.imageConfig || block.type === 9) {
+            const designId = `image:p${pageIndex}-r${rowIndex}-c${columnIndex}-b${blockIndex}`
+            const uploadedSource = template.designOverrides?.staticImages?.[designId]?.dataUrl
+            if (!isSafeEmbeddedImageSource(uploadedSource)) {
+              missingCount += 1
+            }
+          }
+        })
+      })
+    })
+  })
+
+  return missingCount
+}
+
+function isSafeEmbeddedImageSource(source: string | undefined): boolean {
+  return Boolean(source && /^data:image\/(?:jpeg|png|webp);base64,/i.test(source))
+}
+
+function findStaticImageBlock(template: PrintTemplate, designId: string): DesignerBlock | undefined {
+  const match = /^image:p(\d+)-r(\d+)-c(\d+)-b(\d+)$/.exec(designId)
+  if (!match) {
+    return undefined
+  }
+
+  const pageIndex = Number(match[1])
+  const rowIndex = Number(match[2])
+  const columnIndex = Number(match[3])
+  const blockIndex = Number(match[4])
+  const content = template.officialTemplate?.content as DesignerContent | undefined
+  const block = content?.document?.pages?.[pageIndex]?.rows?.[rowIndex]?.columns?.[columnIndex]?.blocks?.[blockIndex]
+  return block && (block.imageConfig || block.type === 9) ? block : undefined
 }
 
 function createStandardOfficialContent(template: PrintTemplate): DesignerContent {

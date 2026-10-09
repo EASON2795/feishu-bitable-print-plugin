@@ -596,15 +596,23 @@ function renderOfficialStaticImage(
   overrides: TemplateDesignOverrides | undefined,
   designId: string,
 ): string {
-  const url = block.imageConfig?.file?.url
-  if (!url) {
-    return ''
-  }
-
   const nodeStyle = overrides?.nodeStyles?.[designId]
   const widthMm = nodeStyle?.imageWidthMm ?? pxToMm(safeNumber(block.width, 120))
   const xMm = nodeStyle?.imageOffsetXMm ?? pxToMm(safeNumber(block.position?.x, 0))
   const yMm = nodeStyle?.imageOffsetYMm ?? pxToMm(safeNumber(block.position?.y, 0))
+  const uploadedUrl = overrides?.staticImages?.[designId]?.dataUrl
+  const url = isSafeEmbeddedStaticImage(uploadedUrl) ? uploadedUrl : ''
+
+  if (!url) {
+    return `<div class="official-image-block official-static-image-placeholder" ${designAttrs(
+      designId,
+      'image',
+    )} data-image-x-mm="${numberCss(xMm, 0)}" data-image-y-mm="${numberCss(yMm, 0)}" style="${buildNodeStyle(
+      nodeStyle,
+    )}">
+      <span style="width:${widthMm}mm; transform:translate(${xMm}mm, ${yMm}mm)">固定图片待手动上传</span>
+    </div>`
+  }
 
   return `<div class="official-image-block" ${designAttrs(designId, 'image')} data-image-x-mm="${numberCss(
     xMm,
@@ -612,6 +620,10 @@ function renderOfficialStaticImage(
   )}" data-image-y-mm="${numberCss(yMm, 0)}" style="${buildNodeStyle(nodeStyle)}">
     <img src="${escapeHtml(url)}" alt="模板图片" draggable="false" style="width:${widthMm}mm; transform:translate(${xMm}mm, ${yMm}mm)" />
   </div>`
+}
+
+function isSafeEmbeddedStaticImage(source: string | undefined): source is string {
+  return Boolean(source && /^data:image\/(?:jpeg|png|webp);base64,/i.test(source))
 }
 
 function getOfficialValue(
@@ -1143,6 +1155,17 @@ function buildOfficialPrintStyles(
     height: auto;
     user-select: none;
     -webkit-user-drag: none;
+  }
+  .official-static-image-placeholder span {
+    align-items: center;
+    background: #f7f9fc;
+    border: 1px dashed #8ea5c4;
+    color: #52657a;
+    display: flex;
+    justify-content: center;
+    min-height: 18mm;
+    padding: 2mm;
+    text-align: center;
   }
   body.design-mode .official-image-block {
     cursor: move;

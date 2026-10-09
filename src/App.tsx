@@ -32,8 +32,10 @@ import { buildPrintDocument } from './printDocument'
 import {
   bindFieldToDesignTarget,
   getDesignTargetText,
+  getMissingStaticTemplateImageCount,
   makeDesignerReadyTemplate,
   updateDesignTargetText,
+  updateStaticTemplateImage,
   type DesignerFieldSource,
 } from './designerTemplate'
 import {
@@ -65,6 +67,7 @@ import {
   type PrintTemplate,
   type TemplateLayoutSettings,
   type TemplateNodeStyleOverride,
+  type TemplateStaticImageAsset,
   type TemplateTextSettings,
   type TextAlign,
   type ValidationIssue,
@@ -133,6 +136,8 @@ type DesignerTableInfo = {
 type DesignerImageInfo = {
   id: string
   label: string
+  fileName?: string
+  hasSource: boolean
   offsetXMm: number
   offsetYMm: number
   widthMm: number
@@ -157,6 +162,10 @@ const MAX_DIAGNOSTIC_EVENTS = 8
 const MAX_TEMPLATE_FILE_SIZE_BYTES = 2 * 1024 * 1024
 const MAX_TEMPLATE_IMPORT_FILES = 20
 const MAX_TEMPLATE_IMPORT_TOTAL_BYTES = 4 * 1024 * 1024
+const MAX_STATIC_TEMPLATE_IMAGE_FILE_BYTES = 5 * 1024 * 1024
+const MAX_STATIC_TEMPLATE_IMAGE_STORED_BYTES = 500 * 1024
+const MAX_STATIC_TEMPLATE_IMAGE_PIXELS = 4_000_000
+const MAX_STATIC_TEMPLATE_IMAGES_PER_TEMPLATE_BYTES = 1024 * 1024
 const CHROME_SCHEMA_TIMEOUT_MS = 3000
 const FEISHU_SELECTION_TIMEOUT_MS = 12_000
 const FEISHU_SCHEMA_TIMEOUT_MS = 12_000
@@ -191,6 +200,7 @@ function App() {
   const [busyAction, setBusyAction] = useState<OutputAction | null>(null)
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
+  const [templateSaveError, setTemplateSaveError] = useState<string | null>(null)
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
   const [hasResolvedDataSourceSchema, setHasResolvedDataSourceSchema] = useState(false)
   const [activePanel, setActivePanel] = useState<ActivePanel>('print')
@@ -778,11 +788,17 @@ function App() {
   function commitTemplateWorkspace(nextWorkspace: TemplateWorkspace) {
     try {
       saveTemplateWorkspace(nextWorkspace)
+      setTemplateSaveError(null)
       templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
       return true
     } catch (storageError) {
-      setMessage('模板没有保存成功，请检查浏览器是否允许本地存储。')
+      const storageMessage =
+        storageError instanceof Error
+          ? `模板没有保存成功：${storageError.message}`
+          : '模板没有保存成功，请检查浏览器是否允许本地存储。'
+      setMessage(storageMessage)
+      setTemplateSaveError(storageMessage)
       addDiagnosticEvent('error', '模板本地存储失败。', formatUnknownError(storageError))
       return false
     }
@@ -797,7 +813,7 @@ function App() {
       return
     }
     const targetTemplate = templates.find((template) => template.id === templateId)
-    if (targetTemplate?.status !== 'ready') {
+    if (!targetTemplate || !isTemplateReadyToUse(targetTemplate)) {
       if (targetTemplate) {
         handleEditTemplate(targetTemplate)
         setTemplateNotice('这个模板还是草稿，请确认数据源后点“保存并使用”。')
@@ -834,6 +850,7 @@ function App() {
       return
     }
     setTemplateImportNotice(null)
+    setTemplateSaveError(null)
     setEditingTemplate(makeDesignerReadyTemplate(createBlankTemplate()))
     setActivePanel('templates')
     setOpenToolbarMenu(null)
@@ -844,6 +861,7 @@ function App() {
       return
     }
     setTemplateImportNotice(null)
+    setTemplateSaveError(null)
     setEditingTemplate(makeDesignerReadyTemplate(copyTemplate(template)))
     setActivePanel('templates')
     setOpenToolbarMenu(null)
@@ -854,6 +872,7 @@ function App() {
       return
     }
     setTemplateImportNotice(null)
+    setTemplateSaveError(null)
     setEditingTemplate(makeDesignerReadyTemplate(template.isBuiltIn ? copyTemplate(template) : template))
     setActivePanel('templates')
     setOpenToolbarMenu(null)
@@ -864,11 +883,15 @@ function App() {
     const missingBindings = normalizedTemplate.officialTemplate
       ? getMissingTemplateDataSourceBindings(normalizedTemplate, trustedDataSourceSchema)
       : []
+    const missingStaticImageCount = getMissingStaticTemplateImageCount(normalizedTemplate)
     const savedTemplate = normalizedTemplate.officialTemplate
       ? {
           ...normalizedTemplate,
           rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
-          status: missingBindings.length ? ('draft' as const) : ('ready' as const),
+          status:
+            missingBindings.length || missingStaticImageCount
+              ? ('draft' as const)
+              : ('ready' as const),
         }
       : normalizedTemplate
     const isReadyToUse = savedTemplate.status === 'ready'
@@ -896,14 +919,20 @@ function App() {
     }
     if (!isReadyToUse) {
       setEditingTemplate(savedTemplate)
-      const nextStep = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
-        ? '请等待飞书字段结构读取完成，再重新确认数据源并保存。'
-        : `请补齐${missingBindings.join('、')}后再次保存。`
+      const nextSteps: string[] = []
+      if (missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)) {
+        nextSteps.push('等待飞书字段结构读取完成，再重新确认数据源')
+      } else if (missingBindings.length) {
+        nextSteps.push(`补齐${missingBindings.join('、')}`)
+      }
+      if (missingStaticImageCount) {
+        nextSteps.push(`手动上传 ${missingStaticImageCount} 张固定图片`)
+      }
       setTemplateImportNotice({
         tone: 'info',
-        message: `草稿“${savedTemplate.name}”已保存，排版文件没有丢失。${nextStep}`,
+        message: `草稿“${savedTemplate.name}”已保存，排版文件没有丢失。请${nextSteps.join('，并')}后再次保存。`,
       })
-      await notifyHost('模板草稿已保存；请补齐主表、明细表和关联字段。')
+      await notifyHost('模板草稿已保存；请完成数据源和固定图片设置。')
       return
     }
 
@@ -1105,11 +1134,14 @@ function App() {
       }
 
       const successDetails: TemplateImportDetail[] = plannedImport.importedTemplates.map(
-        (template, index) => ({
-          fileName: parsedEntries[index]?.fileName ?? template.sourceFile ?? template.name,
-          status: 'success',
-          message: `已保存为草稿“${template.name}”。`,
-        }),
+        (template, index) => {
+          const pendingImageCount = getMissingStaticTemplateImageCount(template)
+          return {
+            fileName: parsedEntries[index]?.fileName ?? template.sourceFile ?? template.name,
+            status: 'success',
+            message: `已保存为草稿“${template.name}”。${pendingImageCount ? `有 ${pendingImageCount} 张固定图片需要手动上传。` : ''}`,
+          }
+        },
       )
       const successCount = successDetails.length
       const failedCount = failedDetails.length
@@ -1179,11 +1211,12 @@ function App() {
           !requiresTemplateSelection &&
           !snapshot?.issues.some((issue) => issue.severity === 'blocker')
         }
-        isTemplateActive={editingTemplate.id === activeTemplate.id && editingTemplate.status === 'ready'}
+        isTemplateActive={editingTemplate.id === activeTemplate.id && isTemplateReadyToUse(editingTemplate)}
         onCancel={() => setEditingTemplate(null)}
         onSave={(template) => void handleSaveTemplate(template)}
         pdfStatus={pdfStatus}
         snapshot={snapshot}
+        saveError={templateSaveError}
         template={editingTemplate}
       />
     )
@@ -2045,8 +2078,8 @@ function TemplateConsole({
                 <div className="template-row-title">
                   <strong>{template.name}</strong>
                   <StatusChip
-                    label={template.status === 'ready' ? '可打印' : '草稿'}
-                    tone={template.status === 'ready' ? 'cool' : 'warm'}
+                    label={isTemplateReadyToUse(template) ? '可打印' : '草稿'}
+                    tone={isTemplateReadyToUse(template) ? 'cool' : 'warm'}
                   />
                 </div>
                 <p>
@@ -2057,7 +2090,7 @@ function TemplateConsole({
               </div>
               <div className="template-row-actions">
                 <button disabled={isTemplateImporting} onClick={() => onUseTemplate(template.id)} type="button">
-                  {template.status === 'ready' ? '使用' : '继续设置'}
+                  {isTemplateReadyToUse(template) ? '使用' : '继续设置'}
                 </button>
                 <button disabled={isTemplateImporting} onClick={() => onEditTemplate(template)} type="button">
                   编辑
@@ -2194,6 +2227,7 @@ function TemplateDesigner({
   onCancel,
   onSave,
   pdfStatus,
+  saveError,
   snapshot,
   template,
 }: {
@@ -2203,6 +2237,7 @@ function TemplateDesigner({
   onCancel: () => void
   onSave: (template: PrintTemplate) => void
   pdfStatus: PdfServiceStatus
+  saveError: string | null
   snapshot: PiSnapshot | null
   template: PrintTemplate
 }) {
@@ -2211,7 +2246,14 @@ function TemplateDesigner({
   const [busyAction, setBusyAction] = useState<'print' | null>(null)
   const designerHeadingRef = useRef<HTMLHeadingElement>(null)
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const saveErrorRef = useRef<HTMLParagraphElement>(null)
+  const staticImageInputRef = useRef<HTMLInputElement>(null)
+  const staticImageUploadButtonRef = useRef<HTMLButtonElement>(null)
+  const shouldFocusStaticImageUploadRef = useRef(false)
+  const [staticImageFocusRequest, setStaticImageFocusRequest] = useState(0)
   const [designerNotice, setDesignerNotice] = useState<string | null>(null)
+  const [staticImageNotice, setStaticImageNotice] = useState<string | null>(null)
+  const [isStaticImageProcessing, setIsStaticImageProcessing] = useState(false)
   const [isDesignerLeftCollapsed, setIsDesignerLeftCollapsed] = useState(false)
   const [isDesignerRightCollapsed, setIsDesignerRightCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 1180,
@@ -2246,6 +2288,7 @@ function TemplateDesigner({
     draft,
     dataSourceSchema,
   )
+  const missingStaticImageCount = getMissingStaticTemplateImageCount(draft)
   const hasUnsavedTemplateChanges = draft !== template
   const hasMatchingOfficialSnapshot = Boolean(
     snapshot?.selectedRecordIds.length &&
@@ -2259,10 +2302,12 @@ function TemplateDesigner({
     isTemplateActive &&
     !hasUnsavedTemplateChanges &&
     missingDataSourceBindings.length === 0 &&
+    missingStaticImageCount === 0 &&
     hasMatchingOfficialSnapshot &&
     Boolean(previewPayload) &&
     pdfStatus === 'online' &&
-    !busyAction
+    !busyAction &&
+    !isStaticImageProcessing
   const isDesignerFocusMode = isDesignerLeftCollapsed && isDesignerRightCollapsed
 
   useEffect(() => {
@@ -2273,11 +2318,39 @@ function TemplateDesigner({
     setDraft(template)
     setSelected(null)
     setDesignerNotice(null)
+    setStaticImageNotice(null)
   }, [template])
+
+  useEffect(() => {
+    if (!saveError) {
+      return
+    }
+    saveErrorRef.current?.focus()
+  }, [saveError])
+
+  useEffect(() => {
+    if (
+      !shouldFocusStaticImageUploadRef.current ||
+      !selectedImage ||
+      isDesignerRightCollapsed
+    ) {
+      return
+    }
+
+    shouldFocusStaticImageUploadRef.current = false
+    const frame = window.requestAnimationFrame(() => {
+      staticImageUploadButtonRef.current?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [isDesignerRightCollapsed, selectedImage, staticImageFocusRequest])
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== previewFrameRef.current?.contentWindow) {
+        return
+      }
+
+      if (isStaticImageProcessing) {
         return
       }
 
@@ -2509,6 +2582,37 @@ function TemplateDesigner({
     })
   }
 
+  async function handleStaticImageFile(file: File) {
+    const designId = selectedImage?.id
+    if (!designId || isStaticImageProcessing) {
+      return
+    }
+
+    const existingAssets = draft.designOverrides?.staticImages ?? {}
+
+    setIsStaticImageProcessing(true)
+    setStaticImageNotice('正在处理本地图片…')
+
+    try {
+      const asset = await prepareStaticTemplateImage(file)
+      const existingBytes = Object.entries(existingAssets).reduce(
+        (total, [assetId, current]) => total + (assetId === designId ? 0 : current.byteSize),
+        0,
+      )
+      if (existingBytes + asset.byteSize > MAX_STATIC_TEMPLATE_IMAGES_PER_TEMPLATE_BYTES) {
+        throw new Error('这个模板的固定图片合计不能超过 1 MB，请选择更小的图片。')
+      }
+
+      setDraft((current) => updateStaticTemplateImage(current, designId, asset))
+      setStaticImageNotice(`已加入图片“${asset.fileName}”，保存模板后会保留在当前浏览器。`)
+    } catch (error) {
+      setStaticImageNotice(error instanceof Error ? error.message : '图片处理失败，请重新选择。')
+    } finally {
+      setIsStaticImageProcessing(false)
+      window.setTimeout(() => staticImageUploadButtonRef.current?.focus(), 0)
+    }
+  }
+
   async function printDesignerDocument() {
     if (!previewPayload || !canRenderPdf) {
       return
@@ -2553,17 +2657,29 @@ function TemplateDesigner({
     .join(' ')
 
   return (
-    <div className={designerShellClassName}>
+    <div aria-busy={isStaticImageProcessing} className={designerShellClassName}>
       <header className="designer-topbar">
         <div>
           <p className="eyebrow">Template Designer</p>
           <h1 ref={designerHeadingRef} tabIndex={-1}>
             {draft.name}
           </h1>
+          {saveError ? (
+            <p
+              aria-live="assertive"
+              className="designer-save-error"
+              ref={saveErrorRef}
+              role="alert"
+              tabIndex={-1}
+            >
+              {saveError}
+            </p>
+          ) : null}
         </div>
         <div className="designer-topbar-actions">
           <button
             className="small-button"
+            disabled={isStaticImageProcessing}
             onClick={() => setIsDesignerLeftCollapsed((current) => !current)}
             type="button"
           >
@@ -2571,6 +2687,7 @@ function TemplateDesigner({
           </button>
           <button
             className="small-button"
+            disabled={isStaticImageProcessing}
             onClick={() => setIsDesignerRightCollapsed((current) => !current)}
             type="button"
           >
@@ -2579,12 +2696,18 @@ function TemplateDesigner({
           <button
             className="small-button"
             aria-pressed={isDesignerFocusMode}
+            disabled={isStaticImageProcessing}
             onClick={toggleDesignerFocusMode}
             type="button"
           >
             {isDesignerFocusMode ? '退出专注' : '专注预览'}
           </button>
-          <button className="small-button" onClick={onCancel} type="button">
+          <button
+            className="small-button"
+            disabled={isStaticImageProcessing}
+            onClick={onCancel}
+            type="button"
+          >
             退出编辑
           </button>
           <button
@@ -2594,6 +2717,8 @@ function TemplateDesigner({
             title={
               missingDataSourceBindings.length
                 ? '请先设置主表、明细表和关联字段'
+                : missingStaticImageCount
+                  ? `请先手动上传 ${missingStaticImageCount} 张固定图片`
                 : !isTemplateActive || hasUnsavedTemplateChanges
                   ? '请先保存并使用模板，再读取当前记录'
                 : hasMatchingOfficialSnapshot
@@ -2604,8 +2729,13 @@ function TemplateDesigner({
           >
             {busyAction === 'print' ? '准备打印…' : '打印'}
           </button>
-          <button className="small-button" onClick={() => onSave(draft)} type="button">
-            {missingDataSourceBindings.length ? '保存草稿' : '保存并使用'}
+          <button
+            className="small-button"
+            disabled={isStaticImageProcessing}
+            onClick={() => onSave(draft)}
+            type="button"
+          >
+            {missingDataSourceBindings.length || missingStaticImageCount ? '保存草稿' : '保存并使用'}
           </button>
         </div>
       </header>
@@ -2632,6 +2762,42 @@ function TemplateDesigner({
               </select>
             </label>
           </section>
+
+          {images.length ? (
+            <section className="designer-section">
+              <div className="panel-heading-row">
+                <h2>固定图片</h2>
+                <StatusChip
+                  label={missingStaticImageCount ? `${missingStaticImageCount} 张待上传` : '已就绪'}
+                  tone={missingStaticImageCount ? 'warm' : 'cool'}
+                />
+              </div>
+              <p className={missingStaticImageCount ? 'designer-binding-alert' : 'designer-binding-ready'} role="status">
+                {missingStaticImageCount
+                  ? '旧模板中的 Logo、印章等外链图片不会自动导入。请选择图片位置，再从本机手动上传。'
+                  : '固定图片已保存在当前浏览器，可用于打印、PDF 和长图。'}
+              </p>
+              <div className="designer-image-list" aria-label="模板固定图片">
+                {images.map((image) => (
+                  <button
+                    className={selected?.designId === image.id ? 'designer-image-list-button is-active' : 'designer-image-list-button'}
+                    disabled={isStaticImageProcessing}
+                    key={image.id}
+                    onClick={() => {
+                      shouldFocusStaticImageUploadRef.current = true
+                      setStaticImageFocusRequest((current) => current + 1)
+                      setSelected({ designId: image.id, kind: 'image', tableId: '' })
+                      setIsDesignerRightCollapsed(false)
+                    }}
+                    type="button"
+                  >
+                    <span>{image.label}</span>
+                    <small>{image.hasSource ? image.fileName || '已上传' : '待上传'}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section className="designer-section">
             <h2>源数据</h2>
@@ -2900,6 +3066,52 @@ function TemplateDesigner({
                 />
                 {selected.kind === 'image' ? (
                   <>
+                    {selectedImage ? (
+                      <div className="designer-static-image-upload">
+                        <p>
+                          {selectedImage.hasSource
+                            ? `当前图片：${selectedImage.fileName || '已上传图片'}`
+                            : '这张固定图片尚未上传。'}
+                        </p>
+                        <input
+                          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                          aria-hidden="true"
+                          hidden
+                          ref={staticImageInputRef}
+                          tabIndex={-1}
+                          type="file"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0]
+                            event.currentTarget.value = ''
+                            if (file) {
+                              void handleStaticImageFile(file)
+                            }
+                          }}
+                        />
+                        <button
+                          aria-describedby="designer-static-image-help"
+                          className="small-button"
+                          disabled={isStaticImageProcessing}
+                          onClick={() => staticImageInputRef.current?.click()}
+                          ref={staticImageUploadButtonRef}
+                          type="button"
+                        >
+                          {isStaticImageProcessing
+                            ? '正在处理…'
+                            : selectedImage.hasSource
+                              ? '重新选择图片'
+                              : '从本机选择图片'}
+                        </button>
+                        <small id="designer-static-image-help">
+                          支持 PNG、JPEG、WebP；图片会压缩后保存在当前浏览器，不会上传服务器。
+                        </small>
+                        {staticImageNotice ? (
+                          <p aria-live="polite" className="designer-static-image-notice" role="status">
+                            {staticImageNotice}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <NumberSettingInput
                       label="横向位置 mm"
                       min={-80}
@@ -3863,9 +4075,14 @@ function collectOfficialImages(template: PrintTemplate): DesignerImageInfo[] {
             return
           }
 
+          const id = `image:p${pageIndex}-r${rowIndex}-c${columnIndex}-b${blockIndex}`
+          const uploadedAsset = template.designOverrides?.staticImages?.[id]
+
           images.push({
-            id: `image:p${pageIndex}-r${rowIndex}-c${columnIndex}-b${blockIndex}`,
+            id,
             label: `第 ${images.length + 1} 张图片`,
+            fileName: uploadedAsset?.fileName,
+            hasSource: Boolean(uploadedAsset?.dataUrl),
             offsetXMm: pxToMmForDesigner(block.position?.x ?? 0),
             offsetYMm: pxToMmForDesigner(block.position?.y ?? 0),
             widthMm: pxToMmForDesigner(block.width ?? 120),
@@ -3880,7 +4097,12 @@ function collectOfficialImages(template: PrintTemplate): DesignerImageInfo[] {
 
 function isOfficialImageBlock(
   block: unknown,
-): block is { type?: number; width?: number; position?: { x?: number; y?: number }; imageConfig?: unknown } {
+): block is {
+  type?: number
+  width?: number
+  position?: { x?: number; y?: number }
+  imageConfig?: { file?: { url?: string } }
+} {
   return Boolean(
     block &&
       typeof block === 'object' &&
@@ -3938,6 +4160,17 @@ function getTemplateIssues(
   }
 
   if (template.officialTemplate) {
+    const missingStaticImageCount = getMissingStaticTemplateImageCount(template)
+    if (missingStaticImageCount) {
+      return [
+        {
+          severity: 'blocker',
+          code: 'template-static-images-incomplete',
+          message: `模板「${template.name}」还有 ${missingStaticImageCount} 张固定图片待上传。请点“修改”，从本机选择 Logo、印章等图片后再保存。`,
+        },
+      ]
+    }
+
     const missingBindings = getMissingTemplateDataSourceBindings(template, schema)
     if (missingBindings.length) {
       const schemaUnavailable = missingBindings.includes(DATA_SOURCE_CONFIRMATION_LABEL)
@@ -3982,6 +4215,7 @@ function canDraftTemplateRenderAfterSave(
 ): boolean {
   if (
     template.officialTemplate &&
+    getMissingStaticTemplateImageCount(template) === 0 &&
     getMissingTemplateDataSourceBindings(template, schema).length === 0
   ) {
     return true
@@ -4124,7 +4358,10 @@ function suggestImportedTemplateBindings(
     itemTableName,
     linkedItemsFieldName,
     rendererTemplateId: OFFICIAL_LAYOUT_TEMPLATE_ID,
-    status: missingBindings.length ? 'draft' : 'ready',
+    status:
+      missingBindings.length || getMissingStaticTemplateImageCount(template)
+        ? 'draft'
+        : 'ready',
   }
 }
 
@@ -4132,7 +4369,7 @@ function getDraftTemplateStateLabel(
   template: PrintTemplate,
   schema?: DataSourceSchema | null,
 ): string {
-  if (template.status === 'ready') {
+  if (template.status === 'ready' && getMissingStaticTemplateImageCount(template) === 0) {
     return '可打印'
   }
 
@@ -4141,6 +4378,10 @@ function getDraftTemplateStateLabel(
   }
 
   return '草稿'
+}
+
+function isTemplateReadyToUse(template: PrintTemplate): boolean {
+  return template.status === 'ready' && getMissingStaticTemplateImageCount(template) === 0
 }
 
 function formatTemplateDate(value: string): string {
@@ -4155,6 +4396,123 @@ function formatTemplateDate(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+async function prepareStaticTemplateImage(file: File): Promise<TemplateStaticImageAsset> {
+  const acceptedMimeType = inferStaticTemplateImageMimeType(file)
+  if (!acceptedMimeType) {
+    throw new Error('请选择 PNG、JPEG 或 WebP 图片；不支持 SVG、GIF 和 HEIC。')
+  }
+  if (!file.size) {
+    throw new Error('选择的图片是空文件。')
+  }
+  if (file.size > MAX_STATIC_TEMPLATE_IMAGE_FILE_BYTES) {
+    throw new Error('原始图片不能超过 5 MB，请压缩后重试。')
+  }
+
+  const image = await decodeLocalImage(file)
+  const pixels = image.naturalWidth * image.naturalHeight
+  if (!image.naturalWidth || !image.naturalHeight || pixels > MAX_STATIC_TEMPLATE_IMAGE_PIXELS) {
+    throw new Error('图片尺寸过大，宽高像素总量不能超过 400 万。')
+  }
+
+  const attempts: Array<{ maxDimension: number; mimeType: TemplateStaticImageAsset['mimeType']; quality: number }> = [
+    { maxDimension: 1600, mimeType: acceptedMimeType, quality: 0.9 },
+    { maxDimension: 1280, mimeType: 'image/webp', quality: 0.86 },
+    { maxDimension: 960, mimeType: 'image/webp', quality: 0.78 },
+  ]
+
+  for (const attempt of attempts) {
+    const blob = await renderLocalImageBlob(image, attempt.maxDimension, attempt.mimeType, attempt.quality)
+    if (blob.size <= MAX_STATIC_TEMPLATE_IMAGE_STORED_BYTES) {
+      return {
+        dataUrl: await blobToDataUrl(blob),
+        fileName: sanitizeLocalImageFileName(file.name),
+        mimeType: attempt.mimeType,
+        byteSize: blob.size,
+      }
+    }
+  }
+
+  throw new Error('图片压缩后仍然过大，请换一张内容更简单或尺寸更小的图片。')
+}
+
+function inferStaticTemplateImageMimeType(file: File): TemplateStaticImageAsset['mimeType'] | null {
+  const mimeType = file.type.toLowerCase()
+  if (mimeType === 'image/jpeg' || mimeType === 'image/png' || mimeType === 'image/webp') {
+    return mimeType
+  }
+
+  const extension = file.name.toLowerCase().split('.').at(-1)
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
+  if (extension === 'png') return 'image/png'
+  if (extension === 'webp') return 'image/webp'
+  return null
+}
+
+function decodeLocalImage(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('这不是可读取的图片文件，请重新选择。'))
+    }
+    image.src = objectUrl
+  })
+}
+
+function renderLocalImageBlob(
+  image: HTMLImageElement,
+  maxDimension: number,
+  mimeType: TemplateStaticImageAsset['mimeType'],
+  quality: number,
+): Promise<Blob> {
+  const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('浏览器无法处理这张图片，请更换图片后重试。')
+  }
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        canvas.width = 1
+        canvas.height = 1
+        if (blob) resolve(blob)
+        else reject(new Error('浏览器无法压缩这张图片，请更换图片后重试。'))
+      },
+      mimeType,
+      quality,
+    )
+  })
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('图片读取失败，请重新选择。'))
+    }
+    reader.onerror = () => reject(new Error('图片读取失败，请重新选择。'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function sanitizeLocalImageFileName(fileName: string): string {
+  const safeName = Array.from(fileName)
+    .filter((character) => character >= ' ' && character !== '\u007f')
+    .join('')
+  return safeName.trim().slice(0, 120) || '模板图片'
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

@@ -1,4 +1,5 @@
 import { DEFAULT_TEST_TEMPLATE, LINKED_ITEMS_FIELD_NAME, TEMPLATE_REGISTRY } from './piConfig'
+import { getMissingStaticTemplateImageCount } from './designerTemplate'
 import { clonePrintSettings } from './templateDefaults'
 import {
   COMMERCIAL_INVOICE_TEMPLATE_ID,
@@ -11,6 +12,7 @@ import {
 } from './types'
 
 const STORAGE_KEY = 'feishu-bitable-print-template-workspace-v1'
+const MAX_STORED_WORKSPACE_CHARACTERS = 3 * 1024 * 1024
 const RETIRED_BUILT_IN_TEMPLATE_IDS = new Set<string>([
   COMMERCIAL_INVOICE_TEMPLATE_ID,
   PACKING_LIST_TEMPLATE_ID,
@@ -39,6 +41,22 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
     const storedCustomTemplates = Array.isArray(parsed.customTemplates)
       ? parsed.customTemplates.filter(isCustomTemplate)
       : []
+    let removedStoredStaticImageSources = false
+    storedCustomTemplates.forEach((template) => {
+      if (
+        template.officialTemplate &&
+        clearOfficialStaticImageSources(template.officialTemplate.content)
+      ) {
+        removedStoredStaticImageSources = true
+      }
+    })
+    if (removedStoredStaticImageSources) {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+      } catch {
+        // The sanitized in-memory copy remains safe to use. A later successful save retries cleanup.
+      }
+    }
     const recoveredOfficialRendererTemplateIds = storedCustomTemplates
       .filter(
         (template) =>
@@ -80,14 +98,22 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
 }
 
 export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
-  window.localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      activeTemplateId: workspace.activeTemplateId,
-      customTemplates: workspace.customTemplates,
-      retiredActiveTemplateId: workspace.retiredActiveTemplateId,
-    }),
+  const serialized = JSON.stringify({
+    activeTemplateId: workspace.activeTemplateId,
+    customTemplates: workspace.customTemplates,
+    retiredActiveTemplateId: workspace.retiredActiveTemplateId,
+  })
+  const storedWorkspace = window.localStorage.getItem(STORAGE_KEY)
+  const isReducingOversizedWorkspace = Boolean(
+    storedWorkspace && serialized.length < storedWorkspace.length,
   )
+  if (
+    serialized.length > MAX_STORED_WORKSPACE_CHARACTERS &&
+    !isReducingOversizedWorkspace
+  ) {
+    throw new Error('模板和本地图片合计过大。请删除不再使用的模板，或换用更小的图片。')
+  }
+  window.localStorage.setItem(STORAGE_KEY, serialized)
 }
 
 export function removeCustomTemplate(
@@ -199,7 +225,10 @@ export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate
   const name = template.name.trim() || '未命名单据模板'
   const documentKind: DocumentKind = template.documentKind
   const hasOfficialTemplate = Boolean(template.officialTemplate)
-  const canUseOfficialRenderer = hasOfficialTemplate && hasCompleteDataSourceBinding(template)
+  const canUseOfficialRenderer =
+    hasOfficialTemplate &&
+    hasCompleteDataSourceBinding(template) &&
+    getMissingStaticTemplateImageCount(template) === 0
   const canUseExistingRenderer =
     (template.rendererTemplateId === PROFORMA_INVOICE_TEMPLATE_ID && documentKind === 'proforma-invoice') ||
     (template.rendererTemplateId === COMMERCIAL_INVOICE_TEMPLATE_ID && documentKind === 'commercial-invoice') ||
@@ -233,19 +262,23 @@ export function normalizeTemplateForSave(template: PrintTemplate): PrintTemplate
 
 function hydrateTemplate(template: PrintTemplate, requiresSchemaValidation = false): PrintTemplate {
   const officialTemplate = cloneOfficialTemplate(template.officialTemplate)
-  return {
+  const hydratedTemplate = {
     ...template,
+    officialTemplate,
+    designOverrides: cloneDesignOverrides(template.designOverrides),
+    printSettings: clonePrintSettings(template.printSettings),
+  }
+  const hasPendingStaticImages = getMissingStaticTemplateImageCount(hydratedTemplate) > 0
+  return {
+    ...hydratedTemplate,
     status: officialTemplate
-      ? requiresSchemaValidation
+      ? requiresSchemaValidation || hasPendingStaticImages
         ? 'draft'
         : template.status
       : template.status,
     rendererTemplateId: officialTemplate
       ? OFFICIAL_LAYOUT_TEMPLATE_ID
       : template.rendererTemplateId,
-    officialTemplate,
-    designOverrides: cloneDesignOverrides(template.designOverrides),
-    printSettings: clonePrintSettings(template.printSettings),
   }
 }
 
@@ -329,7 +362,43 @@ function cloneOfficialTemplate(template: PrintTemplate['officialTemplate']) {
     return undefined
   }
 
-  return structuredClone(template)
+  const cloned = structuredClone(template)
+  clearOfficialStaticImageSources(cloned.content)
+  return cloned
+}
+
+function clearOfficialStaticImageSources(content: Record<string, unknown>): boolean {
+  let removedSource = false
+  const document = content.document as
+    | {
+        pages?: Array<{
+          rows?: Array<{
+            columns?: Array<{
+              blocks?: Array<{
+                type?: number
+                imageConfig?: { file?: { url?: string } }
+              }>
+            }>
+          }>
+        }>
+      }
+    | undefined
+
+  document?.pages?.forEach((page) => {
+    page.rows?.forEach((row) => {
+      row.columns?.forEach((column) => {
+        column.blocks?.forEach((block) => {
+          if ((!block.imageConfig && block.type !== 9) || !block.imageConfig?.file?.url) {
+            return
+          }
+          block.imageConfig.file.url = ''
+          removedSource = true
+        })
+      })
+    })
+  })
+
+  return removedSource
 }
 
 function cloneDesignOverrides(overrides: PrintTemplate['designOverrides']) {

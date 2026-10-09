@@ -123,6 +123,14 @@ export type TemplateDesignOverrides = {
   pageSettings?: TemplatePageStyleOverride
   nodeStyles?: Record<string, TemplateNodeStyleOverride>
   tableColumnWidths?: Record<string, number[]>
+  staticImages?: Record<string, TemplateStaticImageAsset>
+}
+
+export type TemplateStaticImageAsset = {
+  dataUrl: string
+  fileName: string
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  byteSize: number
 }
 
 export type OfficialTemplateSummary = {
