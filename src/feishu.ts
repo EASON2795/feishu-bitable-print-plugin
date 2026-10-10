@@ -245,7 +245,9 @@ export async function notifyHost(message: string): Promise<void> {
   }
 }
 
-export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
+export async function loadDataSourceSchema(
+  preferredTableNames: string[] = [],
+): Promise<DataSourceSchema> {
   try {
     const [tableMetas, activeTable] = await Promise.all([
       bitable.base.getTableMetaList(),
@@ -279,12 +281,23 @@ export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
     }
 
     // Large production Bases can contain dozens of tables. Hydrating every field list
-    // before showing the plugin made schema discovery exceed the host timeout. The
-    // active table plus the tables linked from it are enough to validate and bind the
-    // document template; keep the remaining table names available without blocking.
-    const activeFields = await hydrateTableFields(activeTableMeta.id)
+    // before showing the plugin made schema discovery exceed the host timeout. Hydrate
+    // the current table plus the tables required by the active template, then hydrate
+    // every table linked from those roots. This keeps startup bounded while still
+    // supporting a template whose main table differs from the table that was active
+    // when the plugin first opened.
+    await hydrateTableFields(activeTableMeta.id)
+    const preferredTableNameSet = new Set(
+      preferredTableNames.map((name) => name.trim()).filter(Boolean),
+    )
+    const preferredTableIds = tableMetas
+      .filter((tableMeta) => preferredTableNameSet.has(tableMeta.name))
+      .map((tableMeta) => tableMeta.id)
+    await Promise.all(preferredTableIds.map((tableId) => hydrateTableFields(tableId)))
+
     const linkedTableIds = new Set(
-      activeFields
+      [...hydratedFields.values()]
+        .flat()
         .map((field) => field.linkedTableId)
         .filter((tableId): tableId is string => Boolean(tableId)),
     )

@@ -439,7 +439,14 @@ function App() {
 
     async function loadSchema() {
       try {
-        const schema = await withTimeout(loadDataSourceSchema(), FEISHU_SCHEMA_TIMEOUT_MS)
+        const schema = await withTimeout(
+          loadDataSourceSchema([
+            activeTemplate.mainTableName,
+            activeTemplate.itemTableName,
+            snapshot?.context.mainTableName ?? '',
+          ]),
+          FEISHU_SCHEMA_TIMEOUT_MS,
+        )
         if (isMounted) {
           setDataSourceSchema(schema)
           setHasResolvedDataSourceSchema(true)
@@ -470,7 +477,13 @@ function App() {
     return () => {
       isMounted = false
     }
-  }, [addDiagnosticEvent, isChromeExtension])
+  }, [
+    activeTemplate.itemTableName,
+    activeTemplate.mainTableName,
+    addDiagnosticEvent,
+    isChromeExtension,
+    snapshot?.context.mainTableName,
+  ])
 
   useEffect(() => {
     const recoveredTemplateIds = templateWorkspace.recoveredOfficialRendererTemplateIds
