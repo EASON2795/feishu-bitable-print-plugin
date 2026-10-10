@@ -2370,3 +2370,17 @@
 .template-backup-button:hover {
   background: #eef3f8;
 }
+
+.template-localize-button {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 6px;
+  border: 1px solid #f5b971;
+  border-radius: 6px;
+  color: #9a4d00;
+  background: #fff7ec;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}

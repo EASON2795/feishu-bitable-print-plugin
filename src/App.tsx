@@ -39,6 +39,7 @@ import {
   makeDesignerReadyTemplate,
   updateDesignTargetText,
   updateStaticTemplateImage,
+  listOriginalStaticImages,
   type DesignerFieldSource,
 } from './designerTemplate'
 import {
@@ -338,6 +339,11 @@ function App() {
       ? dataSourceSchema
       : null
   activeTemplateRef.current = activeTemplate
+  const pendingRemoteImageCount = new Set(
+    templateWorkspace.customTemplates.flatMap((template) =>
+      listOriginalStaticImages(template).map((item) => item.url),
+    ),
+  ).size
   const previewTemplate =
     activePanel === 'templates' && editingTemplate ? editingTemplate : activeTemplate
   const runtimeInfo = useMemo(() => collectRuntimeInfo(), [])
@@ -1197,6 +1203,54 @@ function App() {
     }, 0)
   }
 
+  async function handleLocalizeTemplateImages(files: File[]) {
+    const current = templateWorkspaceRef.current ?? templateWorkspace
+    const pendingUrls = Array.from(
+      new Set(current.customTemplates.flatMap((template) => listOriginalStaticImages(template).map((item) => item.url))),
+    )
+    const imageIdOf = (url: string) => url.split('/').pop() ?? url
+    const fileByUrl = new Map<string, File>()
+    pendingUrls.forEach((url) => {
+      const match = files.find((file) => file.name.includes(imageIdOf(url)))
+      if (match) fileByUrl.set(url, match)
+    })
+    if (!fileByUrl.size && files.length === 1 && pendingUrls.length === 1) {
+      fileByUrl.set(pendingUrls[0], files[0])
+    }
+    if (!fileByUrl.size) {
+      setMessage('没有匹配到需要的图片。请选择文件名里带图片编号的印章文件（例如 合同专用章_JNszf4….png）。')
+      return
+    }
+
+    try {
+      const assetByUrl = new Map<string, TemplateStaticImageAsset>()
+      for (const [url, file] of fileByUrl) {
+        assetByUrl.set(url, await prepareStaticTemplateImage(file))
+      }
+      let replaced = 0
+      const customTemplates = current.customTemplates.map((template) => {
+        let next = template
+        for (const { designId, url } of listOriginalStaticImages(template)) {
+          const asset = assetByUrl.get(url)
+          if (asset) {
+            next = updateStaticTemplateImage(next, designId, asset)
+            replaced += 1
+          }
+        }
+        return next
+      })
+      if (commitTemplateWorkspace({ ...current, customTemplates })) {
+        const remaining = pendingUrls.length - assetByUrl.size
+        setTemplateNotice(
+          `已把 ${assetByUrl.size} 张印章/Logo 保存进模板（共替换 ${replaced} 处），不再依赖原版插件的服务器。${remaining ? `还有 ${remaining} 张没匹配到。` : ''}`,
+        )
+        addDiagnosticEvent('info', '模板图片已保存进模板。', `图片 ${assetByUrl.size} 张，替换 ${replaced} 处。`)
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? `图片保存失败：${error.message}` : '图片保存失败。')
+    }
+  }
+
   function handleBackupTemplates() {
     const workspace = templateWorkspaceRef.current ?? templateWorkspace
     const serialized = JSON.stringify(
@@ -1491,6 +1545,8 @@ function App() {
           onSearchChange={setTemplateSearch}
           onUseTemplate={handleUseTemplate}
           onBackupTemplates={handleBackupTemplates}
+          onLocalizeImages={(files) => void handleLocalizeTemplateImages(files)}
+          pendingRemoteImageCount={pendingRemoteImageCount}
           onRestoreBackup={(file) => void handleRestoreBackup(file)}
           search={templateSearch}
           storageLabel={HOST_STORAGE_LABELS[hostStorageState]}
@@ -1947,7 +2003,9 @@ function TemplateSidebar({
   onSearchChange,
   onUseTemplate,
   onBackupTemplates,
+  onLocalizeImages,
   onRestoreBackup,
+  pendingRemoteImageCount,
   search,
   storageLabel,
   storageTone,
@@ -1957,7 +2015,9 @@ function TemplateSidebar({
   activeTemplateId: string
   isTemplateImporting: boolean
   onBackupTemplates: () => void
+  onLocalizeImages: (files: File[]) => void
   onRestoreBackup: (file: File) => void
+  pendingRemoteImageCount: number
   storageLabel: string
   storageTone: 'ok' | 'busy' | 'warn'
 
@@ -1972,6 +2032,7 @@ function TemplateSidebar({
 }) {
   const sidebarUploadRef = useRef<HTMLInputElement>(null)
   const restoreUploadRef = useRef<HTMLInputElement>(null)
+  const localizeUploadRef = useRef<HTMLInputElement>(null)
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleTemplates = normalizedSearch
     ? templates.filter((template) =>
@@ -2107,6 +2168,32 @@ function TemplateSidebar({
         >
           + 新建空白模板
         </button>
+        {pendingRemoteImageCount ? (
+          <>
+            <button
+              className="template-localize-button"
+              onClick={() => localizeUploadRef.current?.click()}
+              title="印章/Logo 目前还从原版插件的服务器读取。选择印章原图后会保存进模板。"
+              type="button"
+            >
+              保存印章到模板（还差 {pendingRemoteImageCount} 张）
+            </button>
+            <input
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              multiple
+              ref={localizeUploadRef}
+              type="file"
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? [])
+                if (files.length) {
+                  onLocalizeImages(files)
+                }
+                event.currentTarget.value = ''
+              }}
+            />
+          </>
+        ) : null}
         <p className={`template-storage-status template-storage-${storageTone}`} role="status">
           {storageLabel}
         </p>

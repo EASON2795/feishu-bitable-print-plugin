@@ -801,3 +801,27 @@ function walkObject(value: unknown, callback: (node: Record<string, unknown>) =>
     }
   })
 }
+
+/** Static image blocks that still point at the original plugin's image host. */
+export function listOriginalStaticImages(
+  template: PrintTemplate,
+): Array<{ designId: string; url: string }> {
+  const content = template.officialTemplate?.content as DesignerContent | undefined
+  const result: Array<{ designId: string; url: string }> = []
+  content?.document?.pages?.forEach((page, pageIndex) => {
+    page.rows?.forEach((row, rowIndex) => {
+      row.columns?.forEach((column, columnIndex) => {
+        column.blocks?.forEach((block, blockIndex) => {
+          if (!block.imageConfig && block.type !== 9) return
+          const designId = `image:p${pageIndex}-r${rowIndex}-c${columnIndex}-b${blockIndex}`
+          const uploaded = template.designOverrides?.staticImages?.[designId]?.dataUrl
+          const url = block.imageConfig?.file?.url
+          if (!isSafeEmbeddedImageSource(uploaded) && isOriginalTemplateImageUrl(url)) {
+            result.push({ designId, url: url.trim() })
+          }
+        })
+      })
+    })
+  })
+  return result
+}
