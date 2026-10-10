@@ -941,11 +941,21 @@ function buildInvoicePrintStyles(settings: TemplatePrintSettings): string {
     word-break: normal;
   }
 
-  .items-table th:nth-child(4) {
+  .items-table th:nth-child(3),
+  .items-table th:nth-child(4),
+  .items-table th:nth-child(5),
+  .items-table th:nth-child(6) {
     padding-left: 0;
     padding-right: 0;
-    font-size: 6.8pt;
-    white-space: nowrap;
+    font-size: 6.4pt;
+    line-height: 1.12;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .items-table th:nth-child(3),
+  .items-table th:nth-child(4) {
+    font-size: 5.9pt;
   }
 
   .items-table td {
@@ -962,6 +972,14 @@ function buildInvoicePrintStyles(settings: TemplatePrintSettings): string {
   .items-table td:nth-child(5),
   .items-table td:nth-child(6) {
     text-align: left;
+    padding-left: 0.6mm;
+    padding-right: 0.6mm;
+    font-size: 7pt;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.18;
+    overflow-wrap: normal;
+    word-break: normal;
+    white-space: nowrap;
   }
 
   .spec-cell {
