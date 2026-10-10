@@ -208,10 +208,10 @@ function renderInvoicePage(document: PiPrintDocument, settings: TemplatePrintSet
           <tr>
             <th>${formatInline(text.itemHeaders.itemName)}</th>
             <th>${formatInline(text.itemHeaders.specification)}</th>
-            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.quantity)}</span></th>
-            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.unit)}</span></th>
-            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.unitPrice)}</span></th>
-            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.subtotal)}</span></th>
+            <th class="compact-header">${formatCompactSvg(text.itemHeaders.quantity)}</th>
+            <th class="compact-header">${formatCompactSvg(text.itemHeaders.unit)}</th>
+            <th class="compact-header">${formatCompactSvg(text.itemHeaders.unitPrice)}</th>
+            <th class="compact-header">${formatCompactSvg(text.itemHeaders.subtotal)}</th>
           </tr>
         </thead>
         <tbody>${itemRows}</tbody>
@@ -239,17 +239,20 @@ function renderItemRow(item: PiPrintDocument['items'][number]): string {
   return `<tr>
     <td>${formatMultiline(item.itemName)}</td>
     <td class="spec-cell">${formatMultiline(item.specification)}</td>
-    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.quantity)}</span></td>
-    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.unit)}</span></td>
-    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.unitPrice)}</span></td>
-    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.subtotal)}</span></td>
+    <td class="compact-value">${formatCompactSvg(item.quantity)}</td>
+    <td class="compact-value">${formatCompactSvg(item.unit)}</td>
+    <td class="compact-value">${formatCompactSvg(item.unitPrice)}</td>
+    <td class="compact-value">${formatCompactSvg(item.subtotal)}</td>
   </tr>`
 }
 
-function formatUnbreakable(value: string): string {
-  return Array.from(value)
-    .map((character) => (character === ' ' ? '&nbsp;' : escapeHtml(character)))
-    .join('&#8288;')
+function formatCompactSvg(value: string): string {
+  const visibleValue = value.replaceAll('\u00a0', ' ')
+  const characters = Array.from(visibleValue)
+  const emWidth = Math.min(Math.max(characters.length * 0.58, 1.5), 8)
+  const viewBoxWidth = Math.max(characters.length * 9, 24)
+
+  return `<svg class="compact-svg" style="width:${numberCss(emWidth, 1.5)}em" viewBox="0 0 ${viewBoxWidth} 16" preserveAspectRatio="xMinYMid meet" role="img" aria-label="${escapeHtml(visibleValue)}"><text x="0" y="12">${escapeHtml(visibleValue)}</text></svg>`
 }
 
 function buildOfficialPrintDocument(payload: PiPrintPayload): string {
@@ -1010,12 +1013,13 @@ function buildInvoicePrintStyles(settings: TemplatePrintSettings): string {
     word-break: keep-all !important;
   }
 
-  .items-table .compact-text {
-    display: inline-block;
-    min-width: max-content;
-    white-space: nowrap !important;
-    overflow-wrap: normal !important;
-    word-break: keep-all !important;
+  .items-table .compact-svg {
+    display: block;
+    max-width: 100%;
+    height: 1.2em;
+    overflow: hidden;
+    font-family: Arial, "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    fill: currentColor;
   }
 
   .spec-cell {
