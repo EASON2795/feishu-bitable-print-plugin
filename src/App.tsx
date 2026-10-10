@@ -618,9 +618,28 @@ function App() {
       const currentWorkspace = templateWorkspaceRef.current ?? templateWorkspace
       const nextWorkspace: TemplateWorkspace = {
         ...currentWorkspace,
-        customTemplates: currentWorkspace.customTemplates.map(
-          (template) => repaired.get(template.id) ?? template,
-        ),
+        customTemplates: currentWorkspace.customTemplates.map((template) => {
+          const rebound = repaired.get(template.id)
+          if (!rebound) return template
+          // Data-source discovery is asynchronous. Only merge the discovered
+          // binding fields into the latest template so a stamp/logo uploaded
+          // while discovery was running cannot be replaced by the stale copy.
+          const nextTemplate = {
+            ...template,
+            mainTableName: rebound.mainTableName,
+            itemTableName: rebound.itemTableName,
+            linkedItemsFieldName: rebound.linkedItemsFieldName,
+            rendererTemplateId: rebound.rendererTemplateId,
+          }
+          return {
+            ...nextTemplate,
+            status:
+              getMissingTemplateDataSourceBindings(nextTemplate, workingSchema).length ||
+              getMissingStaticTemplateImageCount(nextTemplate)
+                ? 'draft'
+                : 'ready',
+          }
+        }),
       }
       commitTemplateWorkspace(nextWorkspace)
       setTemplateNotice(`已自动识别 ${repaired.size} 个模板的数据表，可以直接选择记录打印。`)
