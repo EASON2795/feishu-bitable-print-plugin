@@ -110,6 +110,7 @@ type OfficialRenderContext = {
   rootPath?: string
   item?: Record<string, OfficialPrintValue>
   itemIndex?: number
+  compactText?: boolean
   path: string
 }
 
@@ -442,16 +443,34 @@ function renderOfficialTableCell(
     .filter(Boolean)
     .join(' ')
   const designId = `cell:${tableDesignId.slice('table:'.length)}-row${rowIndex}-col${colIndex}`
+  const compactText = isOfficialCompactColumn(table, colIndex)
   const style = [buildOfficialCellStyle(cell), buildNodeStyle(overrides?.nodeStyles?.[designId])]
     .filter(Boolean)
     .join(';')
+  const classAttr = compactText ? ' class="official-compact-cell"' : ''
 
-  return `<td ${attrs} ${designAttrs(designId, 'cell', tableDesignId)} style="${style}">${renderOfficialContent(
+  return `<td${classAttr} ${attrs} ${designAttrs(designId, 'cell', tableDesignId)} style="${style}">${renderOfficialContent(
     cell.content ?? [],
     document,
     overrides,
-    { ...context, path: designId },
+    { ...context, compactText, path: designId },
   )}</td>`
+}
+
+function isOfficialCompactColumn(table: OfficialTable, colIndex: number): boolean {
+  const headerCell = table.rows?.[0]?.cells?.[colIndex]
+  if (!headerCell) {
+    return false
+  }
+
+  const header = (headerCell.content ?? [])
+    .map((node) => flattenOfficialInlineText(node))
+    .join(' ')
+    .replace(/[\s\u00a0]+/g, ' ')
+    .trim()
+    .toUpperCase()
+
+  return ['QUANTITY', 'QTY', 'UNIT', 'UNIT PRICE', 'SUB TOTAL', 'SUBTOTAL', 'AMOUNT'].includes(header)
 }
 
 function renderOfficialContent(
@@ -558,7 +577,11 @@ function renderOfficialInlineNode(
   if (node.type === 'variable' || node.name) {
     const fieldPath = normalizeFieldPath(node.name ?? '')
     const value = getOfficialValue(document, fieldPath, context)
-    return `<span class="official-variable">${formatInline(value.text)}</span>`
+    const className = context.compactText
+      ? 'official-variable official-compact-wrap'
+      : 'official-variable'
+    const renderedValue = context.compactText ? formatCompactSvg(value.text) : formatInline(value.text)
+    return `<span class="${className}">${renderedValue}</span>`
   }
 
   const styles = [
@@ -570,6 +593,10 @@ function renderOfficialInlineNode(
   const styleAttr = styles ? ` style="${styles}"` : ''
 
   const text = node.text ?? ''
+  if (context.compactText) {
+    return `<span class="official-compact-wrap"${styleAttr}>${formatCompactSvg(text)}</span>`
+  }
+
   return `<span${styleAttr}>${formatInline(text)}</span>`
 }
 
@@ -1218,6 +1245,27 @@ function buildOfficialPrintStyles(
   }
   .official-variable {
     white-space: pre-wrap;
+  }
+  .official-compact-cell {
+    padding-left: 0.25mm !important;
+    padding-right: 0.25mm !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+  }
+  .official-compact-cell .official-paragraph,
+  .official-compact-wrap {
+    display: block;
+    min-width: 0;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+  }
+  .official-compact-cell .compact-svg {
+    display: block;
+    max-width: 100%;
+    height: 1.2em;
+    overflow: hidden;
+    font-family: Arial, "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    fill: currentColor;
   }
   .official-table {
     width: 100%;
