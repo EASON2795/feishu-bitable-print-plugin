@@ -185,6 +185,7 @@ function App() {
   const selectionLoadCountRef = useRef(0)
   const selectionReloadTokenRef = useRef(0)
   const selectionReloadPendingRef = useRef(false)
+  const recordPickerInFlightRef = useRef(false)
   const activeTemplateRef = useRef<PrintTemplate | null>(null)
   const deleteTemplateTriggerRef = useRef<HTMLButtonElement | null>(null)
   const moreMenuWrapRef = useRef<HTMLDivElement | null>(null)
@@ -536,6 +537,9 @@ function App() {
   useEffect(() => {
     let reloadTimer: number | undefined
     const unsubscribe = subscribeSelectionChange(() => {
+      if (recordPickerInFlightRef.current) {
+        return
+      }
       selectionReloadTokenRef.current += 1
       selectionReloadPendingRef.current = true
       setIsSelectionReloadPending(true)
@@ -642,8 +646,7 @@ function App() {
     !isDemoMode &&
     Boolean(snapshot) &&
     !isLoading &&
-    !isTemplateImporting &&
-    !wrongTableIssue
+    !isTemplateImporting
 
   async function handlePrint() {
     if (!printPayload || !canRenderPdf) {
@@ -767,11 +770,12 @@ function App() {
       selectionReadSequence !== selectionReadSequenceRef.current ||
       activeTemplateRef.current !== templateAtStart
     selectionLoadCountRef.current += 1
+    recordPickerInFlightRef.current = true
     setIsLoading(true)
     setMessage(null)
 
     try {
-      const recordIds = await pickPiRecordIds(snapshot)
+      const recordIds = await pickPiRecordIds(snapshot, activeTemplate.mainTableName)
       if (isStaleSelectionLoad()) {
         return
       }
@@ -793,6 +797,7 @@ function App() {
       addDiagnosticEvent('error', '选择记录失败。', formatUnknownError(pickError))
       await notifyHost(nextMessage)
     } finally {
+      recordPickerInFlightRef.current = false
       selectionLoadCountRef.current = Math.max(0, selectionLoadCountRef.current - 1)
       if (selectionLoadCountRef.current === 0) {
         setIsLoading(false)
@@ -1350,7 +1355,7 @@ function App() {
                 type="button"
               >
                 {wrongTableIssue
-                  ? `先切到 ${activeTemplate.mainTableName}`
+                  ? `切换到 ${activeTemplate.mainTableName} 并选择记录`
                   : snapshot?.selectedRecordIds.length
                     ? '重新选择记录'
                     : '选择要打印的记录'}

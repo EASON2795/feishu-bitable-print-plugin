@@ -178,6 +178,8 @@ const OFFICIAL_ITEM_FIELD_ALIASES: Record<PiItemFieldKey, readonly string[]> = {
 }
 
 const SELECTION_POLL_INTERVAL_MS = 1000
+const TABLE_SWITCH_POLL_INTERVAL_MS = 100
+const TABLE_SWITCH_TIMEOUT_MS = 5000
 
 export async function loadPiSnapshot(
   template: PrintTemplate = DEFAULT_TEST_TEMPLATE,
@@ -191,7 +193,7 @@ export async function loadPiSnapshot(
     issues.push({
       severity: 'blocker',
       code: 'wrong-table',
-      message: `请先在飞书表格左侧/左上角切换到数据表「${template.mainTableName}」，再勾选要打印的记录。当前表是「${tableContext.mainTableName}」，不是这个模板的数据源。`,
+      message: `当前表「${tableContext.mainTableName}」不是这个模板的数据源。点击上方“切换到 ${template.mainTableName} 并选择记录”，插件会自动切换；当前表里已经勾选的记录不会带入。`,
     })
     return buildSnapshot(tableContext, template, [], issues, [])
   }
@@ -219,22 +221,59 @@ export async function loadPiSnapshot(
   return buildSnapshot(tableContext, template, documents, issues, scopedRecordIds)
 }
 
-export async function pickPiRecordIds(snapshot: PiSnapshot): Promise<string[]> {
+export async function pickPiRecordIds(
+  snapshot: PiSnapshot,
+  requiredTableName?: string,
+): Promise<string[]> {
   if (snapshot.context.source === 'mock') {
     return snapshot.selectedRecordIds
   }
 
   const wrongTableIssue = snapshot.issues.find((issue) => issue.code === 'wrong-table')
+  let tableId = snapshot.context.mainTableId
+  let viewId = snapshot.context.viewId
+
   if (wrongTableIssue) {
-    throw new Error(wrongTableIssue.message)
+    const targetTableName = requiredTableName?.trim()
+    const tableMetas = await bitable.base.getTableMetaList()
+    const targetTableMeta = tableMetas.find((tableMeta) => tableMeta.name === targetTableName)
+    if (!targetTableMeta) {
+      throw new Error(`找不到模板需要的数据表「${targetTableName || '未设置'}」，请检查模板数据源。`)
+    }
+
+    const switched = await ui.switchToTable(targetTableMeta.id)
+    if (!switched) {
+      throw new Error(`未能切换到数据表「${targetTableMeta.name}」，请在左侧手动打开后重试。`)
+    }
+
+    const targetTable = await waitForActiveTable(targetTableMeta.id)
+    const targetView = await targetTable.getActiveView()
+    const targetViewMeta = await targetView.getMeta()
+    tableId = targetTableMeta.id
+    viewId = targetViewMeta.id
   }
 
-  const recordIds = await ui.selectRecordIdList(snapshot.context.mainTableId, snapshot.context.viewId)
+  const recordIds = await ui.selectRecordIdList(tableId, viewId)
   if (recordIds.length > MAX_PI_DOCUMENTS_PER_BATCH) {
     throw new Error(`一次最多选择 ${MAX_PI_DOCUMENTS_PER_BATCH} 条单据，请分批选择。`)
   }
 
   return recordIds
+}
+
+async function waitForActiveTable(targetTableId: string): Promise<ITable> {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < TABLE_SWITCH_TIMEOUT_MS) {
+    const activeTable = await bitable.base.getActiveTable()
+    const activeTableMeta = await activeTable.getMeta()
+    if (activeTableMeta.id === targetTableId) {
+      return activeTable
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, TABLE_SWITCH_POLL_INTERVAL_MS))
+  }
+
+  throw new Error('数据表切换超时，请稍后重试。')
 }
 
 export async function notifyHost(message: string): Promise<void> {
