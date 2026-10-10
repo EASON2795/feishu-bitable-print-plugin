@@ -1435,8 +1435,21 @@ function buildSnapshot(
   }
 }
 
-const HOST_WORKSPACE_KEY = 'template-workspace-v2'
+const LEGACY_HOST_WORKSPACE_KEY = 'template-workspace-v2'
+const HOST_WORKSPACE_MANIFEST_KEY = 'template-workspace-v3-manifest'
+const HOST_WORKSPACE_CHUNK_PREFIX = 'template-workspace-v3'
 const HOST_STORAGE_TIMEOUT_MS = 8000
+const HOST_STORAGE_CHUNK_SIZE = 24_000
+
+type HostWorkspaceManifest = {
+  version: 3
+  bank: 'a' | 'b'
+  encoding: 'gzip-base64' | 'plain'
+  chunks: number
+  serializedLength: number
+}
+
+let hostSaveQueue: Promise<void> = Promise.resolve()
 
 function withHostTimeout<T>(promise: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -1454,17 +1467,145 @@ function withHostTimeout<T>(promise: Promise<T>): Promise<T> {
   })
 }
 
+function isHostWorkspaceManifest(value: unknown): value is HostWorkspaceManifest {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<HostWorkspaceManifest>
+  return (
+    candidate.version === 3 &&
+    (candidate.bank === 'a' || candidate.bank === 'b') &&
+    (candidate.encoding === 'gzip-base64' || candidate.encoding === 'plain') &&
+    Number.isInteger(candidate.chunks) &&
+    Number(candidate.chunks) > 0 &&
+    Number.isInteger(candidate.serializedLength) &&
+    Number(candidate.serializedLength) >= 0
+  )
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const pieces: string[] = []
+  const step = 0x8000
+  for (let index = 0; index < bytes.length; index += step) {
+    pieces.push(String.fromCharCode(...bytes.subarray(index, index + step)))
+  }
+  return window.btoa(pieces.join(''))
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = window.atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+async function encodeHostWorkspace(serialized: string): Promise<{
+  encoding: HostWorkspaceManifest['encoding']
+  payload: string
+}> {
+  if (typeof CompressionStream === 'undefined') {
+    return { encoding: 'plain', payload: serialized }
+  }
+
+  const stream = new Blob([serialized]).stream().pipeThrough(new CompressionStream('gzip'))
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer())
+  return { encoding: 'gzip-base64', payload: bytesToBase64(bytes) }
+}
+
+async function decodeHostWorkspace(
+  encoding: HostWorkspaceManifest['encoding'],
+  payload: string,
+): Promise<string> {
+  if (encoding === 'plain') return payload
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('当前飞书版本不支持读取压缩模板，请升级飞书。')
+  }
+
+  const bytes = base64ToBytes(payload)
+  const compressed = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(compressed).set(bytes)
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'))
+  return new Response(stream).text()
+}
+
+function hostWorkspaceChunkKey(bank: HostWorkspaceManifest['bank'], index: number): string {
+  return `${HOST_WORKSPACE_CHUNK_PREFIX}-${bank}-${index}`
+}
+
+async function setHostValue<T>(key: string, value: T): Promise<void> {
+  const ok = await withHostTimeout(bitable.bridge.setData<T>(key, value))
+  if (ok === false) throw new Error('飞书拒绝保存模板数据。')
+}
+
+async function loadV3HostWorkspace(): Promise<string | null> {
+  const rawManifest = await withHostTimeout(
+    bitable.bridge.getData<unknown>(HOST_WORKSPACE_MANIFEST_KEY),
+  )
+  if (!isHostWorkspaceManifest(rawManifest)) return null
+
+  const chunks: string[] = []
+  for (let index = 0; index < rawManifest.chunks; index += 1) {
+    const value = await withHostTimeout(
+      bitable.bridge.getData<unknown>(hostWorkspaceChunkKey(rawManifest.bank, index)),
+    )
+    if (typeof value !== 'string') throw new Error('飞书模板分片不完整。')
+    chunks.push(value)
+  }
+
+  const serialized = await decodeHostWorkspace(rawManifest.encoding, chunks.join(''))
+  if (serialized.length !== rawManifest.serializedLength) {
+    throw new Error('飞书模板校验失败。')
+  }
+  return serialized
+}
+
+async function saveV3HostWorkspace(serialized: string): Promise<void> {
+  const currentManifest = await withHostTimeout(
+    bitable.bridge.getData<unknown>(HOST_WORKSPACE_MANIFEST_KEY),
+  )
+  const bank: HostWorkspaceManifest['bank'] =
+    isHostWorkspaceManifest(currentManifest) && currentManifest.bank === 'a' ? 'b' : 'a'
+  const encoded = await encodeHostWorkspace(serialized)
+  const chunks = Array.from(
+    { length: Math.ceil(encoded.payload.length / HOST_STORAGE_CHUNK_SIZE) },
+    (_, index) =>
+      encoded.payload.slice(index * HOST_STORAGE_CHUNK_SIZE, (index + 1) * HOST_STORAGE_CHUNK_SIZE),
+  )
+
+  for (let start = 0; start < chunks.length; start += 4) {
+    await Promise.all(
+      chunks.slice(start, start + 4).map((chunk, offset) =>
+        setHostValue(hostWorkspaceChunkKey(bank, start + offset), chunk),
+      ),
+    )
+  }
+
+  await setHostValue<HostWorkspaceManifest>(HOST_WORKSPACE_MANIFEST_KEY, {
+    version: 3,
+    bank,
+    encoding: encoded.encoding,
+    chunks: chunks.length,
+    serializedLength: serialized.length,
+  })
+}
+
 /** Template workspace stored by Feishu for this plugin in this Base (survives reloads). */
 export async function loadHostWorkspaceText(): Promise<string | null> {
-  const value = await withHostTimeout(bitable.bridge.getData<unknown>(HOST_WORKSPACE_KEY))
+  try {
+    const value = await loadV3HostWorkspace()
+    if (value) return value
+  } catch {
+    // Fall back to the last complete v2 snapshot when a v3 write was interrupted.
+  }
+
+  const value = await withHostTimeout(bitable.bridge.getData<unknown>(LEGACY_HOST_WORKSPACE_KEY))
   return typeof value === 'string' && value ? value : null
 }
 
-export async function saveHostWorkspaceText(serialized: string): Promise<void> {
-  const ok = await withHostTimeout(bitable.bridge.setData<string>(HOST_WORKSPACE_KEY, serialized))
-  if (ok === false) {
-    throw new Error('飞书拒绝保存模板数据。')
-  }
+export function saveHostWorkspaceText(serialized: string): Promise<void> {
+  const save = hostSaveQueue.then(() => saveV3HostWorkspace(serialized))
+  hostSaveQueue = save.catch(() => undefined)
+  return save
 }
 
 export const hasHostWorkspaceStorage = true
