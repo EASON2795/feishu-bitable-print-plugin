@@ -217,6 +217,7 @@ export function updateStaticTemplateImage(
 
   return {
     ...editable,
+    updatedAt: new Date().toISOString(),
     designOverrides: {
       ...editable.designOverrides,
       staticImages: {

@@ -56,7 +56,6 @@ import {
   getWorkspaceSavedAt,
   countWorkspaceTemplates,
   mergeTemplateWorkspaces,
-  TEMPLATE_WORKSPACE_STORAGE_KEY,
   type TemplateWorkspace,
 } from './templateStore'
 import { importTemplateFromText } from './templateImport'
@@ -513,6 +512,7 @@ function App() {
       return
     }
     let isMounted = true
+    const workspaceAtHostLoadStart = templateWorkspaceRef.current
     loadHostWorkspaceText().then(
       (hostText) => {
         if (!isMounted) return
@@ -526,10 +526,16 @@ function App() {
         if (hostText && localText && hostCount && localCount) {
           const hostWorkspace = loadTemplateWorkspace(hostText)
           const localWorkspace = loadTemplateWorkspace(localText)
-          const restored = mergeTemplateWorkspaces(
+          let restored = mergeTemplateWorkspaces(
             hostSavedAt >= localSavedAt ? hostWorkspace : localWorkspace,
             hostSavedAt >= localSavedAt ? localWorkspace : hostWorkspace,
           )
+          const latestWorkspace = templateWorkspaceRef.current
+          if (latestWorkspace && latestWorkspace !== workspaceAtHostLoadStart) {
+            // Host reads are asynchronous. Preserve template edits (including
+            // newly embedded stamps) made while the Feishu copy was loading.
+            restored = mergeTemplateWorkspaces(latestWorkspace, restored)
+          }
           const mergedText = saveTemplateWorkspace(restored, { requireLocal: false })
           dataSourceRepairStartedRef.current = false
           templateWorkspaceRef.current = restored
@@ -540,11 +546,17 @@ function App() {
             `已合并飞书和本机模板，共 ${restored.customTemplates.length} 个。`,
           )
         } else if (hostText && hostCount) {
-          const restored = loadTemplateWorkspace(hostText)
-          try {
-            window.localStorage.setItem(TEMPLATE_WORKSPACE_STORAGE_KEY, hostText)
-          } catch {
-            // Cache only.
+          let restored = loadTemplateWorkspace(hostText)
+          const latestWorkspace = templateWorkspaceRef.current
+          const hasConcurrentWorkspaceChange = Boolean(
+            latestWorkspace && latestWorkspace !== workspaceAtHostLoadStart,
+          )
+          if (latestWorkspace && hasConcurrentWorkspaceChange) {
+            restored = mergeTemplateWorkspaces(latestWorkspace, restored)
+          }
+          const restoredText = saveTemplateWorkspace(restored, { requireLocal: false })
+          if (hasConcurrentWorkspaceChange) {
+            persistWorkspaceToHost(restoredText)
           }
           dataSourceRepairStartedRef.current = false
           templateWorkspaceRef.current = restored
@@ -552,7 +564,12 @@ function App() {
           addDiagnosticEvent('info', `已从飞书恢复 ${hostCount} 个模板。`)
         } else if (localText && localCount) {
           // First run after upgrading: move templates from the browser cache into Feishu.
-          persistWorkspaceToHost(localText)
+          const latestWorkspace = templateWorkspaceRef.current
+          const textToPersist =
+            latestWorkspace && latestWorkspace !== workspaceAtHostLoadStart
+              ? saveTemplateWorkspace(latestWorkspace, { requireLocal: false })
+              : localText
+          persistWorkspaceToHost(textToPersist)
           addDiagnosticEvent('info', `已把本机 ${localCount} 个模板同步到飞书。`)
         }
       },
