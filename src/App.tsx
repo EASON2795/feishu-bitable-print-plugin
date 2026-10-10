@@ -317,8 +317,9 @@ function App() {
   )
   const activeTemplate = bridgedTemplate ?? localActiveTemplate
   const requiresTemplateSelection = Boolean(templateWorkspace.retiredActiveTemplateId)
+  const isDemoMode = shouldUseDemoData()
   const trustedDataSourceSchema =
-    dataSourceSchema && (dataSourceSchema.source === 'feishu' || shouldUseDemoData())
+    dataSourceSchema && (dataSourceSchema.source === 'feishu' || isDemoMode)
       ? dataSourceSchema
       : null
   activeTemplateRef.current = activeTemplate
@@ -625,6 +626,7 @@ function App() {
     !busyAction
   const canPickRecords =
     !isChromeExtension &&
+    !isDemoMode &&
     Boolean(snapshot) &&
     !isLoading &&
     !isTemplateImporting &&
@@ -1322,6 +1324,10 @@ function App() {
                   导入 CSV / JSON
                 </label>
               </div>
+            ) : isDemoMode ? (
+              <p className="demo-mode-note" role="status">
+                演示页使用固定虚构记录；选择真实记录请从飞书 Base 内打开正式插件。
+              </p>
             ) : (
               <button
                 className="batch-link"
@@ -1412,17 +1418,23 @@ function App() {
                       </button>
                     </>
                   ) : (
-                    <button
-                      disabled={!canPickRecords}
-                      onClick={() => {
-                        setOpenToolbarMenu(null)
-                        void handlePickRecords()
-                      }}
-                      role="menuitem"
-                      type="button"
-                    >
-                      选择要打印的记录
-                    </button>
+                    isDemoMode ? (
+                      <button disabled role="menuitem" type="button">
+                        演示记录已固定
+                      </button>
+                    ) : (
+                      <button
+                        disabled={!canPickRecords}
+                        onClick={() => {
+                          setOpenToolbarMenu(null)
+                          void handlePickRecords()
+                        }}
+                        role="menuitem"
+                        type="button"
+                      >
+                        选择要打印的记录
+                      </button>
+                    )
                   )}
                   <button onClick={() => handleEditTemplate(activeTemplate)} role="menuitem" type="button">
                     排版设置

@@ -1356,6 +1356,14 @@
   justify-self: start;
 }
 
+.demo-mode-note {
+  justify-self: start;
+  margin: 0;
+  color: #7a4e00;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .preview-data-links {
   display: flex;
   flex-wrap: wrap;

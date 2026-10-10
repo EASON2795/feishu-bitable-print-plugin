@@ -24,7 +24,7 @@
 - 飞书插件服务地址：<https://eason2795.github.io/feishu-bitable-print-plugin/>
 - 虚构数据演示：<https://eason2795.github.io/feishu-bitable-print-plugin/?demo=1>
 
-直接打开在线地址只能查看演示或界面，无法读取飞书数据。读取多维表格必须从飞书 Base 内打开插件，因为只有飞书插件容器提供官方 SDK 权限。
+直接打开在线地址只能查看演示或界面，演示页使用固定的虚构记录，不会打开真实记录选择器。读取多维表格必须从飞书 Base 内打开插件，因为只有飞书插件容器提供官方 SDK 权限。
 
 ## 在飞书多维表格中使用
 
