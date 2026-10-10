@@ -208,10 +208,10 @@ function renderInvoicePage(document: PiPrintDocument, settings: TemplatePrintSet
           <tr>
             <th>${formatInline(text.itemHeaders.itemName)}</th>
             <th>${formatInline(text.itemHeaders.specification)}</th>
-            <th class="compact-header">${formatInline(text.itemHeaders.quantity)}</th>
-            <th class="compact-header">${formatInline(text.itemHeaders.unit)}</th>
-            <th class="compact-header">${formatInline(text.itemHeaders.unitPrice)}</th>
-            <th class="compact-header">${formatInline(text.itemHeaders.subtotal)}</th>
+            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.quantity)}</span></th>
+            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.unit)}</span></th>
+            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.unitPrice)}</span></th>
+            <th class="compact-header"><span class="compact-text">${formatUnbreakable(text.itemHeaders.subtotal)}</span></th>
           </tr>
         </thead>
         <tbody>${itemRows}</tbody>
@@ -239,11 +239,17 @@ function renderItemRow(item: PiPrintDocument['items'][number]): string {
   return `<tr>
     <td>${formatMultiline(item.itemName)}</td>
     <td class="spec-cell">${formatMultiline(item.specification)}</td>
-    <td class="compact-value">${escapeHtml(item.quantity)}</td>
-    <td class="compact-value">${escapeHtml(item.unit)}</td>
-    <td class="compact-value">${escapeHtml(item.unitPrice)}</td>
-    <td class="compact-value">${escapeHtml(item.subtotal)}</td>
+    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.quantity)}</span></td>
+    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.unit)}</span></td>
+    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.unitPrice)}</span></td>
+    <td class="compact-value"><span class="compact-text">${formatUnbreakable(item.subtotal)}</span></td>
   </tr>`
+}
+
+function formatUnbreakable(value: string): string {
+  return Array.from(value)
+    .map((character) => (character === ' ' ? '&nbsp;' : escapeHtml(character)))
+    .join('&#8288;')
 }
 
 function buildOfficialPrintDocument(payload: PiPrintPayload): string {
@@ -999,6 +1005,14 @@ function buildInvoicePrintStyles(settings: TemplatePrintSettings): string {
     font-size: 6.2pt !important;
     line-height: 1.12 !important;
     letter-spacing: -0.015em;
+    white-space: nowrap !important;
+    overflow-wrap: normal !important;
+    word-break: keep-all !important;
+  }
+
+  .items-table .compact-text {
+    display: inline-block;
+    min-width: max-content;
     white-space: nowrap !important;
     overflow-wrap: normal !important;
     word-break: keep-all !important;
