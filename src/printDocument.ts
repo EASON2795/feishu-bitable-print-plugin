@@ -489,9 +489,51 @@ function renderOfficialInlineNodes(
   context: OfficialRenderContext,
   usesLayoutSpacer = false,
 ): string {
+  if (usesLayoutSpacer) {
+    return renderOfficialSpacedInlineNodes(nodes, document, overrides, context)
+  }
+
   return nodes
-    .map((node) => renderOfficialInlineNode(node, document, overrides, context, usesLayoutSpacer))
+    .map((node) => renderOfficialInlineNode(node, document, overrides, context))
     .join('')
+}
+
+function renderOfficialSpacedInlineNodes(
+  nodes: OfficialContentNode[],
+  document: PiPrintDocument,
+  overrides: TemplateDesignOverrides | undefined,
+  context: OfficialRenderContext,
+): string {
+  const left: string[] = []
+  const right: string[] = []
+  let foundSeparator = false
+
+  nodes.forEach((node) => {
+    if (!foundSeparator && node.type !== 'variable' && !node.name && typeof node.text === 'string') {
+      const match = /[ \t\u00a0]{6,}/.exec(node.text)
+      if (match) {
+        const before = node.text.slice(0, match.index)
+        const after = node.text.slice(match.index + match[0].length)
+        if (before) {
+          left.push(renderOfficialInlineNode({ ...node, text: before }, document, overrides, context))
+        }
+        if (after) {
+          right.push(renderOfficialInlineNode({ ...node, text: collapseLegacyLayoutFill(after) }, document, overrides, context))
+        }
+        foundSeparator = true
+        return
+      }
+    }
+
+    const target = foundSeparator ? right : left
+    const normalizedNode =
+      foundSeparator && typeof node.text === 'string'
+        ? { ...node, text: collapseLegacyLayoutFill(node.text) }
+        : node
+    target.push(renderOfficialInlineNode(normalizedNode, document, overrides, context))
+  })
+
+  return `<span class="official-layout-left">${left.join('')}</span><span class="official-layout-right">${right.join('')}</span>`
 }
 
 function renderOfficialInlineNode(
@@ -499,7 +541,6 @@ function renderOfficialInlineNode(
   document: PiPrintDocument,
   overrides: TemplateDesignOverrides | undefined,
   context: OfficialRenderContext,
-  usesLayoutSpacer = false,
 ): string {
   if (node.type === 'attachment') {
     return renderOfficialAttachment(node, document, overrides, context)
@@ -520,9 +561,6 @@ function renderOfficialInlineNode(
   const styleAttr = styles ? ` style="${styles}"` : ''
 
   const text = node.text ?? ''
-  if (usesLayoutSpacer) {
-    return renderInlineTextWithLayoutSpacers(text, styleAttr)
-  }
   return `<span${styleAttr}>${formatInline(text)}</span>`
 }
 
@@ -543,15 +581,8 @@ function flattenOfficialInlineText(node: OfficialContentNode): string {
   return node.text ?? ''
 }
 
-function renderInlineTextWithLayoutSpacers(value: string, styleAttr: string): string {
-  return value
-    .split(/([ \t\u00a0]{6,})/)
-    .map((part) =>
-      /^[ \t\u00a0]{6,}$/.test(part)
-        ? '<span class="official-layout-spacer" aria-hidden="true"></span>'
-        : `<span${styleAttr}>${formatInline(part)}</span>`,
-    )
-    .join('')
+function collapseLegacyLayoutFill(value: string): string {
+  return value.replace(/[ \t\u00a0]{6,}/g, ' ')
 }
 
 function renderOfficialAttachment(
@@ -1113,18 +1144,19 @@ function buildOfficialPrintStyles(
     word-break: break-word;
   }
   .official-paragraph-spaced {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: baseline;
-    gap: 1mm;
+    column-gap: 3mm;
     white-space: normal;
   }
-  .official-paragraph-spaced > span:not(.official-layout-spacer) {
-    flex: 0 1 auto;
+  .official-layout-left {
     min-width: 0;
   }
-  .official-layout-spacer {
-    flex: 1 1 auto;
-    min-width: 3mm;
+  .official-layout-right {
+    justify-self: end;
+    text-align: right;
+    white-space: nowrap;
   }
   .official-variable {
     white-space: pre-wrap;
