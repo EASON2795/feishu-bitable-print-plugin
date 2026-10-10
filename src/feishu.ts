@@ -252,28 +252,53 @@ export async function loadDataSourceSchema(): Promise<DataSourceSchema> {
       bitable.base.getActiveTable(),
     ])
     const activeTableMeta = await activeTable.getMeta()
-    const tables = await Promise.all(
-      tableMetas.map(async (tableMeta) => {
-        const table = await bitable.base.getTableById(tableMeta.id)
-        const fields = await table.getFieldMetaList()
-        return {
-          id: tableMeta.id,
-          name: tableMeta.name,
-          fields: fields.map((field) => ({
-            id: field.id,
-            name: field.name,
-            type: String(field.type),
-            linkedTableId:
-              field.property &&
-              typeof field.property === 'object' &&
-              'tableId' in field.property &&
-              typeof field.property.tableId === 'string'
-                ? field.property.tableId
-                : undefined,
-          })),
-        }
-      }),
+    const hydratedFields = new Map<string, DataSourceSchema['tables'][number]['fields']>()
+
+    const hydrateTableFields = async (tableId: string) => {
+      if (hydratedFields.has(tableId)) {
+        return hydratedFields.get(tableId) ?? []
+      }
+
+      const table = tableId === activeTableMeta.id
+        ? activeTable
+        : await bitable.base.getTableById(tableId)
+      const fields = (await table.getFieldMetaList()).map((field) => ({
+        id: field.id,
+        name: field.name,
+        type: String(field.type),
+        linkedTableId:
+          field.property &&
+          typeof field.property === 'object' &&
+          'tableId' in field.property &&
+          typeof field.property.tableId === 'string'
+            ? field.property.tableId
+            : undefined,
+      }))
+      hydratedFields.set(tableId, fields)
+      return fields
+    }
+
+    // Large production Bases can contain dozens of tables. Hydrating every field list
+    // before showing the plugin made schema discovery exceed the host timeout. The
+    // active table plus the tables linked from it are enough to validate and bind the
+    // document template; keep the remaining table names available without blocking.
+    const activeFields = await hydrateTableFields(activeTableMeta.id)
+    const linkedTableIds = new Set(
+      activeFields
+        .map((field) => field.linkedTableId)
+        .filter((tableId): tableId is string => Boolean(tableId)),
     )
+    await Promise.all(
+      [...linkedTableIds]
+        .filter((tableId) => tableMetas.some((tableMeta) => tableMeta.id === tableId))
+        .map((tableId) => hydrateTableFields(tableId)),
+    )
+
+    const tables = tableMetas.map((tableMeta) => ({
+      id: tableMeta.id,
+      name: tableMeta.name,
+      fields: hydratedFields.get(tableMeta.id) ?? [],
+    }))
 
     return {
       source: 'feishu',
