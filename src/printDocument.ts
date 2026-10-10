@@ -466,11 +466,16 @@ function renderOfficialContentNode(
 
   if (node.type === 'paragraph' || node.children) {
     const align = ['left', 'center', 'right'].includes(node.align || '') ? node.align : 'left'
-    return `<p class="official-paragraph" style="text-align:${align}">${renderOfficialInlineNodes(
+    const usesLayoutSpacer = hasLegacyLayoutSpacer(node.children ?? [])
+    const className = usesLayoutSpacer
+      ? 'official-paragraph official-paragraph-spaced'
+      : 'official-paragraph'
+    return `<p class="${className}" style="text-align:${align}">${renderOfficialInlineNodes(
       node.children ?? [],
       document,
       overrides,
       context,
+      usesLayoutSpacer,
     )}</p>`
   }
 
@@ -482,8 +487,11 @@ function renderOfficialInlineNodes(
   document: PiPrintDocument,
   overrides: TemplateDesignOverrides | undefined,
   context: OfficialRenderContext,
+  usesLayoutSpacer = false,
 ): string {
-  return nodes.map((node) => renderOfficialInlineNode(node, document, overrides, context)).join('')
+  return nodes
+    .map((node) => renderOfficialInlineNode(node, document, overrides, context, usesLayoutSpacer))
+    .join('')
 }
 
 function renderOfficialInlineNode(
@@ -491,6 +499,7 @@ function renderOfficialInlineNode(
   document: PiPrintDocument,
   overrides: TemplateDesignOverrides | undefined,
   context: OfficialRenderContext,
+  usesLayoutSpacer = false,
 ): string {
   if (node.type === 'attachment') {
     return renderOfficialAttachment(node, document, overrides, context)
@@ -510,7 +519,39 @@ function renderOfficialInlineNode(
     .join(';')
   const styleAttr = styles ? ` style="${styles}"` : ''
 
-  return `<span${styleAttr}>${formatInline(node.text ?? '')}</span>`
+  const text = node.text ?? ''
+  if (usesLayoutSpacer) {
+    return renderInlineTextWithLayoutSpacers(text, styleAttr)
+  }
+  return `<span${styleAttr}>${formatInline(text)}</span>`
+}
+
+function hasLegacyLayoutSpacer(nodes: OfficialContentNode[]): boolean {
+  const text = nodes.map((node) => flattenOfficialInlineText(node)).join('')
+  return /\S[ \t\u00a0]{6,}(?=\S)/.test(text)
+}
+
+function flattenOfficialInlineText(node: OfficialContentNode): string {
+  if (node.type === 'variable' || node.name) {
+    return '\uFFFC'
+  }
+
+  if (node.children?.length) {
+    return node.children.map((child) => flattenOfficialInlineText(child)).join('')
+  }
+
+  return node.text ?? ''
+}
+
+function renderInlineTextWithLayoutSpacers(value: string, styleAttr: string): string {
+  return value
+    .split(/([ \t\u00a0]{6,})/)
+    .map((part) =>
+      /^[ \t\u00a0]{6,}$/.test(part)
+        ? '<span class="official-layout-spacer" aria-hidden="true"></span>'
+        : `<span${styleAttr}>${formatInline(part)}</span>`,
+    )
+    .join('')
 }
 
 function renderOfficialAttachment(
@@ -719,7 +760,8 @@ function formatMultiline(value: string): string {
 }
 
 function formatInline(value: string): string {
-  return escapeHtml(value || '').replace(/ {2}/g, '&nbsp;&nbsp;')
+  const withoutLegacyTrailingFill = (value || '').replace(/[ \t\u00a0]{6,}$/g, '')
+  return escapeHtml(withoutLegacyTrailingFill).replace(/ {2}/g, '&nbsp;&nbsp;')
 }
 
 function escapeHtml(value: string): string {
@@ -1069,6 +1111,20 @@ function buildOfficialPrintStyles(
     min-height: 1em;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .official-paragraph-spaced {
+    display: flex;
+    align-items: baseline;
+    gap: 1mm;
+    white-space: normal;
+  }
+  .official-paragraph-spaced > span:not(.official-layout-spacer) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .official-layout-spacer {
+    flex: 1 1 auto;
+    min-width: 3mm;
   }
   .official-variable {
     white-space: pre-wrap;
