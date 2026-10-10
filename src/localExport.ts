@@ -1,3 +1,5 @@
+import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
 import { buildPdfFileName, buildPrintDocument } from './printDocument'
 import type { PiPrintPayload } from './types'
 
@@ -30,8 +32,6 @@ export async function exportPdf(payload: PiPrintPayload): Promise<void> {
 
   try {
     const pages = getExportPages(frame.document)
-    const html2canvas = (await import('html2canvas')).default
-    const { jsPDF } = await import('jspdf')
     let pdf: InstanceType<typeof jsPDF> | null = null
 
     for (const [index, page] of pages.entries()) {
@@ -106,7 +106,6 @@ export async function exportLongImage(payload: PiPrintPayload): Promise<void> {
 
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, canvasWidth, canvasHeight)
-    const html2canvas = (await import('html2canvas')).default
     let y = 0
 
     for (const page of pages) {
