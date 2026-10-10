@@ -1,3 +1,4 @@
+import { isOriginalTemplateImageUrl } from './templateImages'
 import { DEFAULT_TEST_TEMPLATE } from './piConfig'
 import { clonePrintSettings } from './templateDefaults'
 import {
@@ -199,7 +200,7 @@ function clearImportedStaticImageLinks(content: OfficialTemplateContent): number
           }
 
           const source = block.imageConfig?.file?.url?.trim()
-          if (!source) {
+          if (!source || isOriginalTemplateImageUrl(source)) {
             return
           }
 
@@ -333,8 +334,12 @@ function buildOfficialTemplateSummary(
   let attachmentFieldCount = 0
 
   walkObject(content, (node) => {
-    if (Array.isArray(node.name)) {
-      const path = normalizeFieldPath(node.name)
+    if (node.type === 'loop' && Array.isArray(node.rootPath) && typeof node.rootPath[0] === 'string') {
+      dynamicRoots.add(node.rootPath[0])
+    }
+
+    if (Array.isArray(node.name) || (node.type === 'variable' && typeof node.name === 'string')) {
+      const path = normalizeFieldPath(node.name as string[] | string)
       if (path) {
         fieldRefs.add(path)
       }

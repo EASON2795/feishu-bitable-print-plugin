@@ -362,6 +362,149 @@ export async function loadDataSourceSchema(
   }
 }
 
+const LINK_FIELD_TYPES = new Set(['18', '21'])
+
+export type OfficialDataSourceMatch = {
+  mainTableName: string
+  itemTableName: string
+  linkedItemsFieldName: string
+  matchedFieldCount: number
+  totalFieldCount: number
+}
+
+/**
+ * The original Feishu print plugin never stores a table name in its exported
+ * templates. A template is bound to whichever table contains the referenced
+ * fields, and the item rows come from the link field named in the dynamic row
+ * `rootPath`. Reproduce that: find the table that owns the link field and most of
+ * the referenced main fields, preferring the table id cached in the export, then
+ * the active table. Returns the schema extended with the matched tables' fields.
+ */
+export async function locateOfficialDataSource(
+  template: PrintTemplate,
+  schema: DataSourceSchema | null,
+): Promise<{ schema: DataSourceSchema | null; match: OfficialDataSourceMatch | null }> {
+  const official = template.officialTemplate
+  if (!official || !schema || schema.source !== 'feishu') {
+    return { schema, match: null }
+  }
+
+  const linkFieldName = official.dynamicRoots[0] ?? ''
+  const mainFieldNames = official.mainFieldRefs.filter((ref) => ref && !ref.includes('/'))
+  const cachedTableIds = readCachedTableIds(official.content)
+  const fieldCache = new Map(
+    schema.tables.filter((table) => table.fields.length).map((table) => [table.id, table.fields]),
+  )
+
+  const loadFields = async (tableId: string) => {
+    const cached = fieldCache.get(tableId)
+    if (cached) return cached
+    try {
+      const table = await bitable.base.getTableById(tableId)
+      const fields = (await table.getFieldMetaList()).map((field) => ({
+        id: field.id,
+        name: field.name,
+        type: String(field.type),
+        linkedTableId:
+          field.property &&
+          typeof field.property === 'object' &&
+          'tableId' in field.property &&
+          typeof field.property.tableId === 'string'
+            ? field.property.tableId
+            : undefined,
+      }))
+      fieldCache.set(tableId, fields)
+      return fields
+    } catch {
+      fieldCache.set(tableId, [])
+      return []
+    }
+  }
+
+  const tableById = new Map(schema.tables.map((table) => [table.id, table]))
+  const activeTableId = schema.tables.find((table) => table.name === schema.activeTableName)?.id
+  const orderedIds = [
+    ...cachedTableIds.filter((id) => tableById.has(id)),
+    ...(activeTableId ? [activeTableId] : []),
+    ...schema.tables.map((table) => table.id),
+  ].filter((id, index, list) => list.indexOf(id) === index)
+
+  type Candidate = { tableId: string; itemTableId: string; score: number; order: number }
+  let best: Candidate | null = null
+  const consider = async (tableId: string, order: number) => {
+    const fields = await loadFields(tableId)
+    const fieldNames = new Set(fields.map((field) => field.name))
+    const linkField = linkFieldName
+      ? fields.find(
+          (field) =>
+            field.name === linkFieldName &&
+            LINK_FIELD_TYPES.has(field.type) &&
+            field.linkedTableId &&
+            tableById.has(field.linkedTableId),
+        )
+      : undefined
+    if (linkFieldName && !linkField) return
+    const score = mainFieldNames.filter((name) => fieldNames.has(name)).length
+    if (!linkFieldName && score === 0) return
+    if (!best || score > best.score || (score === best.score && order < best.order)) {
+      best = { tableId, itemTableId: linkField?.linkedTableId ?? tableId, score, order }
+    }
+  }
+
+  // Fast path: the cached / active tables usually match completely.
+  const fastIds = orderedIds.slice(0, cachedTableIds.length + 1)
+  for (const [order, tableId] of fastIds.entries()) {
+    await consider(tableId, order)
+  }
+  const fastBest = best as Candidate | null
+  if (!fastBest || fastBest.score < mainFieldNames.length) {
+    const rest = orderedIds.slice(fastIds.length)
+    for (let index = 0; index < rest.length; index += 6) {
+      await Promise.all(
+        rest.slice(index, index + 6).map((tableId, offset) => consider(tableId, fastIds.length + index + offset)),
+      )
+    }
+  }
+
+  const winner = best as Candidate | null
+  if (!winner) {
+    return { schema: withFields(schema, fieldCache), match: null }
+  }
+  await loadFields(winner.itemTableId)
+  return {
+    schema: withFields(schema, fieldCache),
+    match: {
+      mainTableName: tableById.get(winner.tableId)?.name ?? '',
+      itemTableName: tableById.get(winner.itemTableId)?.name ?? '',
+      linkedItemsFieldName: linkFieldName,
+      matchedFieldCount: winner.score,
+      totalFieldCount: mainFieldNames.length,
+    },
+  }
+}
+
+function withFields(
+  schema: DataSourceSchema,
+  fieldCache: Map<string, DataSourceSchema['tables'][number]['fields']>,
+): DataSourceSchema {
+  return {
+    ...schema,
+    tables: schema.tables.map((table) => ({
+      ...table,
+      fields: table.fields.length ? table.fields : fieldCache.get(table.id) ?? [],
+    })),
+  }
+}
+
+function readCachedTableIds(content: Record<string, unknown>): string[] {
+  const ids: string[] = []
+  const meta = content.baseFieldMetaCache as { tables?: Record<string, unknown> } | undefined
+  if (meta?.tables && typeof meta.tables === 'object') {
+    ids.push(...Object.keys(meta.tables))
+  }
+  return ids.filter((id) => /^tbl[0-9A-Za-z]+$/.test(id))
+}
+
 export async function loadSyncedTemplate(): Promise<PrintTemplate | null> {
   return null
 }
@@ -1291,3 +1434,37 @@ function buildSnapshot(
     selectedRecordIds,
   }
 }
+
+const HOST_WORKSPACE_KEY = 'template-workspace-v2'
+const HOST_STORAGE_TIMEOUT_MS = 8000
+
+function withHostTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('飞书存储响应超时。')), HOST_STORAGE_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+/** Template workspace stored by Feishu for this plugin in this Base (survives reloads). */
+export async function loadHostWorkspaceText(): Promise<string | null> {
+  const value = await withHostTimeout(bitable.bridge.getData<unknown>(HOST_WORKSPACE_KEY))
+  return typeof value === 'string' && value ? value : null
+}
+
+export async function saveHostWorkspaceText(serialized: string): Promise<void> {
+  const ok = await withHostTimeout(bitable.bridge.setData<string>(HOST_WORKSPACE_KEY, serialized))
+  if (ok === false) {
+    throw new Error('飞书拒绝保存模板数据。')
+  }
+}
+
+export const hasHostWorkspaceStorage = true

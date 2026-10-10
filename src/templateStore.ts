@@ -1,3 +1,4 @@
+import { isOriginalTemplateImageUrl } from './templateImages'
 import { DEFAULT_TEST_TEMPLATE, LINKED_ITEMS_FIELD_NAME, TEMPLATE_REGISTRY } from './piConfig'
 import { getMissingStaticTemplateImageCount } from './designerTemplate'
 import { clonePrintSettings } from './templateDefaults'
@@ -28,11 +29,41 @@ export type TemplateWorkspace = {
 
 type StoredWorkspace = Partial<TemplateWorkspace>
 
-export function loadTemplateWorkspace(): TemplateWorkspace {
+export const TEMPLATE_WORKSPACE_STORAGE_KEY = STORAGE_KEY
+
+export function readLocalWorkspaceText(): string | null {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function getWorkspaceSavedAt(serialized: string | null | undefined): number {
+  if (!serialized) return 0
+  try {
+    const parsed = JSON.parse(serialized) as { savedAt?: unknown }
+    return typeof parsed.savedAt === 'number' ? parsed.savedAt : 0
+  } catch {
+    return 0
+  }
+}
+
+export function countWorkspaceTemplates(serialized: string | null | undefined): number {
+  if (!serialized) return 0
+  try {
+    const parsed = JSON.parse(serialized) as StoredWorkspace
+    return Array.isArray(parsed.customTemplates) ? parsed.customTemplates.length : 0
+  } catch {
+    return 0
+  }
+}
+
+export function loadTemplateWorkspace(serializedOverride?: string | null): TemplateWorkspace {
   const fallback = createFallbackWorkspace()
 
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY)
+    const stored = serializedOverride ?? readLocalWorkspaceText()
     if (!stored) {
       return fallback
     }
@@ -97,13 +128,78 @@ export function loadTemplateWorkspace(): TemplateWorkspace {
   }
 }
 
-export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
-  const serialized = JSON.stringify({
+export function serializeTemplateWorkspace(workspace: TemplateWorkspace): string {
+  return JSON.stringify({
     activeTemplateId: workspace.activeTemplateId,
     customTemplates: workspace.customTemplates,
     retiredActiveTemplateId: workspace.retiredActiveTemplateId,
+    savedAt: Date.now(),
   })
-  const storedWorkspace = window.localStorage.getItem(STORAGE_KEY)
+}
+
+/**
+ * Combines the Feishu-hosted workspace with the browser cache without dropping
+ * templates that only exist on one side. For the same template id, the newest
+ * template edit wins. The preferred workspace controls the active template.
+ */
+export function mergeTemplateWorkspaces(
+  preferred: TemplateWorkspace,
+  fallback: TemplateWorkspace,
+): TemplateWorkspace {
+  const byId = new Map<string, PrintTemplate>()
+  const orderedIds: string[] = []
+  for (const template of [...preferred.customTemplates, ...fallback.customTemplates]) {
+    const current = byId.get(template.id)
+    if (!current) {
+      byId.set(template.id, template)
+      orderedIds.push(template.id)
+      continue
+    }
+    const currentUpdatedAt = Date.parse(current.updatedAt)
+    const candidateUpdatedAt = Date.parse(template.updatedAt)
+    if (
+      Number.isFinite(candidateUpdatedAt) &&
+      (!Number.isFinite(currentUpdatedAt) || candidateUpdatedAt > currentUpdatedAt)
+    ) {
+      byId.set(template.id, template)
+    }
+  }
+  const customTemplates = orderedIds.flatMap((id) => {
+    const template = byId.get(id)
+    return template ? [template] : []
+  })
+  const activeTemplateId = findTemplate(preferred.activeTemplateId, customTemplates)
+    ? preferred.activeTemplateId
+    : findTemplate(fallback.activeTemplateId, customTemplates)
+      ? fallback.activeTemplateId
+      : DEFAULT_TEST_TEMPLATE.id
+
+  return {
+    activeTemplateId,
+    customTemplates,
+    retiredActiveTemplateId:
+      preferred.retiredActiveTemplateId ?? fallback.retiredActiveTemplateId,
+    recoveredOfficialRendererTemplateIds: Array.from(
+      new Set([
+        ...(preferred.recoveredOfficialRendererTemplateIds ?? []),
+        ...(fallback.recoveredOfficialRendererTemplateIds ?? []),
+      ]),
+    ),
+  }
+}
+
+/**
+ * Writes the workspace to the browser cache and returns the serialized text so the
+ * caller can also persist it to the Feishu host (bitable.bridge.setData). Inside the
+ * Feishu iframe, localStorage is not reliable across reloads, so a localStorage
+ * failure is only fatal when `requireLocal` is true (no host storage available).
+ */
+export function saveTemplateWorkspace(
+  workspace: TemplateWorkspace,
+  options: { requireLocal?: boolean } = {},
+): string {
+  const serialized = serializeTemplateWorkspace(workspace)
+  const storedWorkspace = readLocalWorkspaceText()
   const isReducingOversizedWorkspace = Boolean(
     storedWorkspace && serialized.length < storedWorkspace.length,
   )
@@ -113,7 +209,14 @@ export function saveTemplateWorkspace(workspace: TemplateWorkspace) {
   ) {
     throw new Error('模板和本地图片合计过大。请删除不再使用的模板，或换用更小的图片。')
   }
-  window.localStorage.setItem(STORAGE_KEY, serialized)
+  try {
+    window.localStorage.setItem(STORAGE_KEY, serialized)
+  } catch (error) {
+    if (options.requireLocal ?? true) {
+      throw error
+    }
+  }
+  return serialized
 }
 
 export function removeCustomTemplate(
@@ -160,7 +263,7 @@ export function appendImportedTemplates(
       ...candidate,
       id,
       name,
-      status: 'draft',
+      status: candidate.status,
       isBuiltIn: false,
       officialTemplate: cloneOfficialTemplate(candidate.officialTemplate),
       designOverrides: cloneDesignOverrides(candidate.designOverrides),
@@ -388,7 +491,11 @@ function clearOfficialStaticImageSources(content: Record<string, unknown>): bool
     page.rows?.forEach((row) => {
       row.columns?.forEach((column) => {
         column.blocks?.forEach((block) => {
-          if ((!block.imageConfig && block.type !== 9) || !block.imageConfig?.file?.url) {
+          if (
+            (!block.imageConfig && block.type !== 9) ||
+            !block.imageConfig?.file?.url ||
+            isOriginalTemplateImageUrl(block.imageConfig.file.url)
+          ) {
             return
           }
           block.imageConfig.file.url = ''

@@ -1,3 +1,4 @@
+import { isOriginalTemplateImageUrl } from './templateImages'
 import { clonePrintSettings } from './templateDefaults'
 import {
   OFFICIAL_LAYOUT_TEMPLATE_ID,
@@ -70,6 +71,9 @@ type OfficialTableRow = {
 
 type OfficialTableCell = {
   content?: OfficialContentNode[]
+  background?: string
+  borderColor?: string
+  borderWidth?: number
   verticalAlign?: 'top' | 'middle' | 'bottom'
   borderBottomStyle?: string
   borderTopStyle?: string
@@ -100,11 +104,18 @@ type OfficialContentNode = {
   align?: string
   fontSize?: string
   bold?: boolean
+  lineHeight?: string | number
+  marginBottom?: string | number
+  rootPath?: string[]
+  itemContent?: OfficialContentNode[]
   renderConfig?: {
     mode?: string
     imageDisplayMode?: string
+    inlineJoiner?: string
   }
 }
+
+const LEGACY_SPACER_COLUMNS = false as boolean
 
 type OfficialRenderContext = {
   rootPath?: string
@@ -345,6 +356,24 @@ function renderOfficialBlock(
   overrides: TemplateDesignOverrides | undefined,
   path: string,
 ): string {
+  const margins = (['Top', 'Right', 'Bottom', 'Left'] as const)
+    .map((side) => {
+      const value = (block as Record<string, unknown>)[`margin${side}`]
+      return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < 400
+        ? `margin-${side.toLowerCase()}:${value}px`
+        : ''
+    })
+    .filter(Boolean)
+  const inner = renderOfficialBlockInner(block, document, overrides, path)
+  return margins.length ? `<div class="official-block-margin" style="${margins.join(';')}">${inner}</div>` : inner
+}
+
+function renderOfficialBlockInner(
+  block: OfficialBlock,
+  document: PiPrintDocument,
+  overrides: TemplateDesignOverrides | undefined,
+  path: string,
+): string {
   if (block.table) {
     return renderOfficialTable(block.table, document, overrides, `table:${path}`)
   }
@@ -492,13 +521,29 @@ function renderOfficialContentNode(
     return renderOfficialAttachment(node, document, overrides, context)
   }
 
-  if (node.type === 'paragraph' || node.children) {
-    const align = ['left', 'center', 'right'].includes(node.align || '') ? node.align : 'left'
-    const usesLayoutSpacer = hasLegacyLayoutSpacer(node.children ?? [])
-    const className = usesLayoutSpacer
-      ? 'official-paragraph official-paragraph-spaced'
-      : 'official-paragraph'
-    return `<p class="${className}" style="text-align:${align}">${renderOfficialInlineNodes(
+  if (node.type === 'loop') {
+    return renderOfficialLoop(node, document, overrides, context)
+  }
+
+  if (node.type === 'paragraph' || node.type === 'heading-one' || node.children) {
+    const align = ['left', 'center', 'right', 'justify'].includes(node.align || '') ? node.align : 'left'
+    // The original editor renders runs of spaces with white-space: pre-wrap, so long
+    // space runs wrap lines exactly like the original. Keep that behaviour instead of
+    // re-interpreting spaces as left/right columns.
+    const usesLayoutSpacer = LEGACY_SPACER_COLUMNS && hasLegacyLayoutSpacer(node.children ?? [])
+    const className = [
+      'official-paragraph',
+      node.type === 'heading-one' ? 'official-heading' : '',
+      usesLayoutSpacer ? 'official-paragraph-spaced' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    const paragraphStyles = [`text-align:${align}`]
+    const lineHeight = cssLength(node.lineHeight)
+    if (lineHeight) paragraphStyles.push(`line-height:${lineHeight}`)
+    const marginBottom = cssLength(node.marginBottom)
+    if (marginBottom) paragraphStyles.push(`margin-bottom:${marginBottom}`)
+    return `<p class="${className}" style="${paragraphStyles.join(';')}">${renderOfficialInlineNodes(
       node.children ?? [],
       document,
       overrides,
@@ -577,11 +622,7 @@ function renderOfficialInlineNode(
   if (node.type === 'variable' || node.name) {
     const fieldPath = normalizeFieldPath(node.name ?? '')
     const value = getOfficialValue(document, fieldPath, context)
-    const className = context.compactText
-      ? 'official-variable official-compact-wrap'
-      : 'official-variable'
-    const renderedValue = context.compactText ? formatCompactSvg(value.text) : formatInline(value.text)
-    return `<span class="${className}">${renderedValue}</span>`
+    return `<span class="official-variable">${formatInline(value.text)}</span>`
   }
 
   const styles = [
@@ -593,11 +634,40 @@ function renderOfficialInlineNode(
   const styleAttr = styles ? ` style="${styles}"` : ''
 
   const text = node.text ?? ''
-  if (context.compactText) {
-    return `<span class="official-compact-wrap"${styleAttr}>${formatCompactSvg(text)}</span>`
-  }
-
   return `<span${styleAttr}>${formatInline(text)}</span>`
+}
+
+function renderOfficialLoop(
+  node: OfficialContentNode,
+  document: PiPrintDocument,
+  overrides: TemplateDesignOverrides | undefined,
+  context: OfficialRenderContext,
+): string {
+  const rootPath = normalizeFieldPath(node.rootPath ?? [])
+  const items = document.official?.itemGroups[rootPath] ?? []
+  const joiner = node.renderConfig?.inlineJoiner ?? '、'
+  const parts = items
+    .map((item, itemIndex) =>
+      (node.itemContent ?? [])
+        .map((child) =>
+          (child.children ?? [child])
+            .map((inline) =>
+              renderOfficialInlineNode(inline, document, overrides, { ...context, rootPath, item, itemIndex }),
+            )
+            .join(''),
+        )
+        .join(''),
+    )
+    .filter((part) => part.replace(/<[^>]+>/g, '').trim())
+  const unique = parts.filter((part, index) => parts.indexOf(part) === index)
+  return `<span class="official-loop">${unique.join(escapeHtml(joiner))}</span>`
+}
+
+function cssLength(value: string | number | undefined): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  return /^\d+(?:\.\d+)?(?:em|px|pt|mm|%)?$/.test(trimmed) ? trimmed : ''
 }
 
 function hasLegacyLayoutSpacer(nodes: OfficialContentNode[]): boolean {
@@ -709,7 +779,12 @@ function renderOfficialStaticImage(
   const xMm = nodeStyle?.imageOffsetXMm ?? pxToMm(safeNumber(block.position?.x, 0))
   const yMm = nodeStyle?.imageOffsetYMm ?? pxToMm(safeNumber(block.position?.y, 0))
   const uploadedUrl = overrides?.staticImages?.[designId]?.dataUrl
-  const url = isSafeEmbeddedStaticImage(uploadedUrl) ? uploadedUrl : ''
+  const originalUrl = block.imageConfig?.file?.url
+  const url = isSafeEmbeddedStaticImage(uploadedUrl)
+    ? uploadedUrl
+    : isOriginalTemplateImageUrl(originalUrl)
+      ? originalUrl.trim()
+      : ''
 
   if (!url) {
     return `<div class="official-image-block official-static-image-placeholder" ${designAttrs(
@@ -726,7 +801,7 @@ function renderOfficialStaticImage(
     xMm,
     0,
   )}" data-image-y-mm="${numberCss(yMm, 0)}" style="${buildNodeStyle(nodeStyle)}">
-    <img src="${escapeHtml(url)}" alt="模板图片" draggable="false" style="width:${widthMm}mm; transform:translate(${xMm}mm, ${yMm}mm)" />
+    <img src="${escapeHtml(url)}" alt="" draggable="false" style="width:${widthMm}mm; left:${xMm}mm; top:${yMm}mm" />
   </div>`
 }
 
@@ -806,6 +881,13 @@ function isCoveredByMerge(merges: OfficialTableMerge[], rowIndex: number, colInd
 function buildOfficialCellStyle(cell: OfficialTableCell): string {
   const verticalAlign = cell.verticalAlign === 'middle' ? 'middle' : cell.verticalAlign === 'bottom' ? 'bottom' : 'top'
   const styles = [`vertical-align:${verticalAlign}`]
+  const safeColor = (value: string | undefined) =>
+    value && /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\)|[a-z]+)$/i.test(value.trim()) ? value.trim() : ''
+  if (safeColor(cell.background)) styles.push(`background:${safeColor(cell.background)}`)
+  if (safeColor(cell.borderColor)) styles.push(`border-color:${safeColor(cell.borderColor)}`)
+  if (typeof cell.borderWidth === 'number' && cell.borderWidth >= 0 && cell.borderWidth <= 6) {
+    styles.push(`border-width:${cell.borderWidth}px`)
+  }
   ;(
     [
       ['border-top', cell.borderTopStyle],
@@ -827,8 +909,9 @@ function formatMultiline(value: string): string {
 }
 
 function formatInline(value: string): string {
-  const withoutLegacyTrailingFill = (value || '').replace(/[ \t\u00a0]{6,}$/g, '')
-  return escapeHtml(withoutLegacyTrailingFill).replace(/ {2}/g, '&nbsp;&nbsp;')
+  // Keep spaces exactly as typed; the paragraph's white-space rule lays them out
+  // like the original editor (runs of spaces push following text to a new line).
+  return escapeHtml(value || '')
 }
 
 function escapeHtml(value: string): string {
@@ -1171,7 +1254,8 @@ function buildOfficialPrintStyles(
   @page { size: ${width}mm ${height}mm; margin: 0; }
   :root {
     color: #111;
-    font-family: Arial, "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    /* Same font stack as the original Feishu print plugin (DocuGenius). */
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans", "Noto Sans CJK SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: ${fontSize}pt;
     line-height: ${lineHeight};
   }
@@ -1216,6 +1300,11 @@ function buildOfficialPrintStyles(
     display: grid;
     width: 100%;
   }
+  /* The original editor separates layout rows with a 17px gap; templates cancel
+     it with a negative block marginTop to join tables. */
+  .official-row + .official-row {
+    margin-top: 17px;
+  }
   .official-column {
     min-width: 0;
   }
@@ -1225,8 +1314,9 @@ function buildOfficialPrintStyles(
   .official-paragraph {
     margin: 0;
     min-height: 1em;
+    /* Matches the original editor: spaces kept (pre-wrap), words may break anywhere. */
     white-space: pre-wrap;
-    word-break: break-word;
+    word-break: break-all;
   }
   .official-paragraph-spaced {
     display: grid;
@@ -1246,26 +1336,13 @@ function buildOfficialPrintStyles(
   .official-variable {
     white-space: pre-wrap;
   }
-  .official-compact-cell {
-    padding-left: 0.25mm !important;
-    padding-right: 0.25mm !important;
-    white-space: nowrap !important;
-    word-break: keep-all !important;
+  .official-compact-cell .official-paragraph {
+    word-break: keep-all;
+    overflow-wrap: normal;
   }
-  .official-compact-cell .official-paragraph,
-  .official-compact-wrap {
-    display: block;
-    min-width: 0;
-    white-space: nowrap !important;
-    word-break: keep-all !important;
-  }
-  .official-compact-cell .compact-svg {
-    display: block;
-    max-width: 100%;
-    height: 1.2em;
-    overflow: hidden;
-    font-family: Arial, "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
-    fill: currentColor;
+  .official-heading {
+    font-size: 1.6em;
+    font-weight: 700;
   }
   .official-table {
     width: 100%;
@@ -1277,10 +1354,9 @@ function buildOfficialPrintStyles(
     width: 100%;
   }
   .official-table td {
-    min-height: 6mm;
     border: 1px solid #111;
-    padding: 1.8mm 1.5mm;
-    word-break: break-word;
+    padding: 4px 5px;
+    word-break: break-all;
   }
   .official-table tr {
     break-inside: avoid;
@@ -1343,6 +1419,14 @@ function buildOfficialPrintStyles(
     width: 100%;
     min-height: 0;
   }
+  .official-image-block:not(.official-attachment-image-block) {
+    height: 0;
+    overflow: visible;
+    z-index: 2;
+  }
+  .official-image-block:not(.official-attachment-image-block) img {
+    position: absolute;
+  }
   .official-image-block img {
     display: block;
     position: relative;
@@ -1373,10 +1457,7 @@ function buildOfficialPrintStyles(
   .official-body .official-page {
     ${pageMode === 'fit-one-page' ? `height: ${height}mm;` : ''}
   }
-  @media screen and (max-width: 900px) {
-    .official-stack { padding: 0; gap: 16px; }
-    .official-page { width: 100%; min-height: auto; box-shadow: none; }
-  }
+${buildFitToWidthStyles(width)}
   @media print {
     body.official-body { background: transparent; }
     .official-stack { gap: 0; padding: 0; }
@@ -1384,6 +1465,23 @@ function buildOfficialPrintStyles(
   }
   ${buildDesignOverrideStyles(overrides)}
 `
+}
+
+// Never reflow the page to a narrower width: that is what made table cells and
+// space-aligned text wrap differently from the original. Shrink the whole page
+// visually instead (CSS only, so it also works in the sandboxed preview iframe).
+function buildFitToWidthStyles(pageWidthMm: number): string {
+  const pagePx = (pageWidthMm * 96) / 25.4
+  const rules: string[] = [
+    'body.official-body { container-type: inline-size; container-name: printstack; }',
+  ]
+  for (let zoom = 0.95; zoom >= 0.3; zoom -= 0.05) {
+    const breakpoint = Math.round(pagePx * (zoom + 0.05) + 24)
+    rules.push(
+      `@container printstack (max-width: ${breakpoint}px) { body:not(.design-mode) .official-page { zoom: ${zoom.toFixed(2)}; } body:not(.design-mode) .official-stack { padding: 12px 0; gap: 12px; } }`,
+    )
+  }
+  return `@media screen { ${rules.join('\n')} }`
 }
 
 function designAttrs(designId: string, kind: string, tableId?: string): string {
@@ -1668,7 +1766,7 @@ function buildDesignerSelectionScript(): string {
       nextY = Number(nextY.toFixed(2));
       imageMoveState.wrapper.setAttribute('data-image-x-mm', String(nextX));
       imageMoveState.wrapper.setAttribute('data-image-y-mm', String(nextY));
-      imageMoveState.image.style.transform = 'translate(' + nextX + 'mm, ' + nextY + 'mm)';
+      if (getComputedStyle(imageMoveState.image).position === 'absolute') { imageMoveState.image.style.left = nextX + 'mm'; imageMoveState.image.style.top = nextY + 'mm'; } else { imageMoveState.image.style.transform = 'translate(' + nextX + 'mm, ' + nextY + 'mm)'; }
     }, true);
     document.addEventListener('mousemove', function(event) {
       if (!imageMoveState) return;
@@ -1679,7 +1777,7 @@ function buildDesignerSelectionScript(): string {
       nextY = Number(nextY.toFixed(2));
       imageMoveState.wrapper.setAttribute('data-image-x-mm', String(nextX));
       imageMoveState.wrapper.setAttribute('data-image-y-mm', String(nextY));
-      imageMoveState.image.style.transform = 'translate(' + nextX + 'mm, ' + nextY + 'mm)';
+      if (getComputedStyle(imageMoveState.image).position === 'absolute') { imageMoveState.image.style.left = nextX + 'mm'; imageMoveState.image.style.top = nextY + 'mm'; } else { imageMoveState.image.style.transform = 'translate(' + nextX + 'mm, ' + nextY + 'mm)'; }
     }, true);
     document.addEventListener('pointerup', function(event) {
       if (!resizeState) return;

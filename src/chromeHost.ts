@@ -141,3 +141,20 @@ export function subscribeSelectionChange(onChange: () => void): () => void {
   runtime.onMessage.addListener(listener)
   return () => runtime.onMessage.removeListener(listener)
 }
+
+export async function locateOfficialDataSource(
+  _template: PrintTemplate,
+  schema: DataSourceSchema | null,
+): Promise<{ schema: DataSourceSchema | null; match: null }> {
+  return { schema, match: null }
+}
+
+export async function loadHostWorkspaceText(): Promise<string | null> {
+  return null
+}
+
+export async function saveHostWorkspaceText(serialized: string): Promise<void> {
+  void serialized
+}
+
+export const hasHostWorkspaceStorage = false

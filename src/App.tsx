@@ -13,6 +13,9 @@ import './App.css'
 import {
   getMockDataSourceSchema,
   loadDataSourceSchema,
+  locateOfficialDataSource,
+  loadHostWorkspaceText,
+  saveHostWorkspaceText,
   loadPiSnapshot,
   loadSyncedTemplate,
   notifyHost,
@@ -47,6 +50,12 @@ import {
   normalizeTemplateForSave,
   removeCustomTemplate,
   saveTemplateWorkspace,
+  serializeTemplateWorkspace,
+  readLocalWorkspaceText,
+  getWorkspaceSavedAt,
+  countWorkspaceTemplates,
+  mergeTemplateWorkspaces,
+  TEMPLATE_WORKSPACE_STORAGE_KEY,
   type TemplateWorkspace,
 } from './templateStore'
 import { importTemplateFromText } from './templateImport'
@@ -194,6 +203,7 @@ function App() {
   const exportMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const restoreExportFocusRef = useRef(false)
   const templateImportInFlightRef = useRef(false)
+  const dataSourceRepairStartedRef = useRef(false)
   const templateWorkspaceRef = useRef<TemplateWorkspace | null>(null)
   const [snapshot, setSnapshot] = useState<PiSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -202,6 +212,10 @@ function App() {
   const [pdfStatus, setPdfStatus] = useState<PdfServiceStatus>('checking')
   const [message, setMessage] = useState<string | null>(null)
   const [templateSaveError, setTemplateSaveError] = useState<string | null>(null)
+  const hostStorageAvailableRef = useRef(false)
+  const [hostStorageState, setHostStorageState] = useState<
+    'checking' | 'ready' | 'saving' | 'saved' | 'error' | 'unavailable'
+  >(isChromeExtension ? 'unavailable' : 'checking')
   const [dataSourceSchema, setDataSourceSchema] = useState<DataSourceSchema | null>(null)
   const [hasResolvedDataSourceSchema, setHasResolvedDataSourceSchema] = useState(false)
   const [activePanel, setActivePanel] = useState<ActivePanel>('print')
@@ -486,6 +500,133 @@ function App() {
     snapshot?.context.mainTableName,
   ])
 
+  // Feishu keeps plugin data per Base via bitable.bridge; localStorage inside the
+  // plugin iframe can be wiped on reload, which is why templates "disappeared".
+  useEffect(() => {
+    if (isChromeExtension) {
+      return
+    }
+    let isMounted = true
+    loadHostWorkspaceText().then(
+      (hostText) => {
+        if (!isMounted) return
+        hostStorageAvailableRef.current = true
+        setHostStorageState('ready')
+        const localText = readLocalWorkspaceText()
+        const hostSavedAt = getWorkspaceSavedAt(hostText)
+        const localSavedAt = getWorkspaceSavedAt(localText)
+        const hostCount = countWorkspaceTemplates(hostText)
+        const localCount = countWorkspaceTemplates(localText)
+        if (hostText && localText && hostCount && localCount) {
+          const hostWorkspace = loadTemplateWorkspace(hostText)
+          const localWorkspace = loadTemplateWorkspace(localText)
+          const restored = mergeTemplateWorkspaces(
+            hostSavedAt >= localSavedAt ? hostWorkspace : localWorkspace,
+            hostSavedAt >= localSavedAt ? localWorkspace : hostWorkspace,
+          )
+          const mergedText = saveTemplateWorkspace(restored, { requireLocal: false })
+          dataSourceRepairStartedRef.current = false
+          templateWorkspaceRef.current = restored
+          setTemplateWorkspace(restored)
+          persistWorkspaceToHost(mergedText)
+          addDiagnosticEvent(
+            'info',
+            `已合并飞书和本机模板，共 ${restored.customTemplates.length} 个。`,
+          )
+        } else if (hostText && hostCount) {
+          const restored = loadTemplateWorkspace(hostText)
+          try {
+            window.localStorage.setItem(TEMPLATE_WORKSPACE_STORAGE_KEY, hostText)
+          } catch {
+            // Cache only.
+          }
+          dataSourceRepairStartedRef.current = false
+          templateWorkspaceRef.current = restored
+          setTemplateWorkspace(restored)
+          addDiagnosticEvent('info', `已从飞书恢复 ${hostCount} 个模板。`)
+        } else if (localText && localCount) {
+          // First run after upgrading: move templates from the browser cache into Feishu.
+          persistWorkspaceToHost(localText)
+          addDiagnosticEvent('info', `已把本机 ${localCount} 个模板同步到飞书。`)
+        }
+      },
+      (error) => {
+        if (!isMounted) return
+        hostStorageAvailableRef.current = false
+        setHostStorageState('unavailable')
+        addDiagnosticEvent('warning', '飞书存储不可用，模板只保存在本机浏览器。', formatUnknownError(error))
+      },
+    )
+    return () => {
+      isMounted = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Re-bind imported templates the way the original plugin does: by locating the
+  // table that owns the referenced fields. Repairs templates that earlier versions
+  // bound to whatever table happened to be open during import.
+  useEffect(() => {
+    if (
+      !hasResolvedDataSourceSchema ||
+      !trustedDataSourceSchema ||
+      trustedDataSourceSchema.source !== 'feishu' ||
+      dataSourceRepairStartedRef.current
+    ) {
+      return
+    }
+    const candidates = templateWorkspace.customTemplates.filter(
+      (template) =>
+        template.officialTemplate &&
+        getMissingTemplateDataSourceBindings(template, trustedDataSourceSchema).length > 0,
+    )
+    if (!candidates.length) {
+      return
+    }
+    dataSourceRepairStartedRef.current = true
+
+    void (async () => {
+      let workingSchema: DataSourceSchema | null = trustedDataSourceSchema
+      const repaired = new Map<string, PrintTemplate>()
+      for (const template of candidates) {
+        try {
+          const located = await locateOfficialDataSource(template, workingSchema)
+          workingSchema = located.schema
+          if (!located.match) continue
+          const rebound = suggestImportedTemplateBindings(
+            { ...template, mainTableName: '', itemTableName: '', linkedItemsFieldName: '' },
+            workingSchema,
+            located.match.mainTableName,
+          )
+          if (!getMissingTemplateDataSourceBindings(rebound, workingSchema).length) {
+            repaired.set(template.id, rebound)
+          }
+        } catch (error) {
+          addDiagnosticEvent('warning', `模板「${template.name}」自动识别数据源失败。`, formatUnknownError(error))
+        }
+      }
+      if (workingSchema && workingSchema !== trustedDataSourceSchema) {
+        setDataSourceSchema(workingSchema)
+      }
+      if (!repaired.size) return
+      const currentWorkspace = templateWorkspaceRef.current ?? templateWorkspace
+      const nextWorkspace: TemplateWorkspace = {
+        ...currentWorkspace,
+        customTemplates: currentWorkspace.customTemplates.map(
+          (template) => repaired.get(template.id) ?? template,
+        ),
+      }
+      commitTemplateWorkspace(nextWorkspace)
+      setTemplateNotice(`已自动识别 ${repaired.size} 个模板的数据表，可以直接选择记录打印。`)
+      addDiagnosticEvent(
+        'info',
+        '已按字段自动识别模板数据源。',
+        [...repaired.values()].map((template) => `${template.name} → ${template.mainTableName}`).join('；'),
+      )
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasResolvedDataSourceSchema, trustedDataSourceSchema, templateWorkspace.customTemplates])
+
   useEffect(() => {
     const recoveredTemplateIds = templateWorkspace.recoveredOfficialRendererTemplateIds
     if (!hasResolvedDataSourceSchema || !recoveredTemplateIds?.length) {
@@ -510,7 +651,9 @@ function App() {
     }
 
     try {
-      saveTemplateWorkspace(nextWorkspace)
+      persistWorkspaceToHost(
+        saveTemplateWorkspace(nextWorkspace, { requireLocal: !hostStorageAvailableRef.current }),
+      )
       templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
       setTemplateNotice(
@@ -527,6 +670,7 @@ function App() {
       setMessage('模板已在当前页面修复，但浏览器本地存储失败；刷新后可能需要再次修复。')
       addDiagnosticEvent('error', '修复后的模板没有写入本地存储。', formatUnknownError(storageError))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     addDiagnosticEvent,
     hasResolvedDataSourceSchema,
@@ -805,9 +949,32 @@ function App() {
     }
   }
 
+  function persistWorkspaceToHost(serialized: string) {
+    if (!hostStorageAvailableRef.current) {
+      return
+    }
+    setHostStorageState('saving')
+    saveHostWorkspaceText(serialized).then(
+      () => {
+        setHostStorageState('saved')
+        setTemplateSaveError(null)
+      },
+      (error) => {
+        const storageMessage = `模板没有同步到飞书：${error instanceof Error ? error.message : '未知错误'}。刷新前请先点“备份模板”。`
+        setHostStorageState('error')
+        setTemplateSaveError(storageMessage)
+        setMessage(storageMessage)
+        addDiagnosticEvent('error', '模板写入飞书存储失败。', formatUnknownError(error))
+      },
+    )
+  }
+
   function commitTemplateWorkspace(nextWorkspace: TemplateWorkspace) {
     try {
-      saveTemplateWorkspace(nextWorkspace)
+      const serialized = saveTemplateWorkspace(nextWorkspace, {
+        requireLocal: !hostStorageAvailableRef.current,
+      })
+      persistWorkspaceToHost(serialized)
       setTemplateSaveError(null)
       templateWorkspaceRef.current = nextWorkspace
       setTemplateWorkspace(nextWorkspace)
@@ -1030,6 +1197,51 @@ function App() {
     }, 0)
   }
 
+  function handleBackupTemplates() {
+    const workspace = templateWorkspaceRef.current ?? templateWorkspace
+    const serialized = JSON.stringify(
+      { kind: 'feishu-print-template-backup', version: 1, ...JSON.parse(serializeTemplateWorkspace(workspace)) },
+      null,
+      1,
+    )
+    const blob = new Blob([serialized], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+    anchor.href = url
+    anchor.download = `飞书打印模板备份-${stamp}.json`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+    setTemplateNotice(`已下载 ${workspace.customTemplates.length} 个模板的备份文件。`)
+  }
+
+  async function handleRestoreBackup(file: File) {
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text) as { kind?: string; customTemplates?: unknown }
+      if (parsed.kind !== 'feishu-print-template-backup' || !Array.isArray(parsed.customTemplates)) {
+        throw new Error('这不是本插件导出的模板备份文件。')
+      }
+      const restored = loadTemplateWorkspace(text)
+      const current = templateWorkspaceRef.current ?? templateWorkspace
+      const existingIds = new Set(current.customTemplates.map((template) => template.id))
+      const added = restored.customTemplates.filter((template) => !existingIds.has(template.id))
+      if (!added.length) {
+        setTemplateNotice('备份里的模板都已经存在，没有新增。')
+        return
+      }
+      dataSourceRepairStartedRef.current = false
+      if (commitTemplateWorkspace({ ...current, customTemplates: [...current.customTemplates, ...added] })) {
+        setTemplateNotice(`已从备份恢复 ${added.length} 个模板。`)
+      }
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : '备份文件读取失败。'
+      setMessage(`恢复失败：${nextMessage}`)
+    }
+  }
+
   async function handleImportTemplateFiles(files: File[]) {
     if (!files.length || templateImportInFlightRef.current) {
       return
@@ -1070,6 +1282,7 @@ function App() {
 
     const parsedEntries: { fileName: string; template: PrintTemplate }[] = []
     const failedDetails: TemplateImportDetail[] = []
+    let workingSchema = trustedDataSourceSchema
 
     try {
       for (const [index, file] of files.entries()) {
@@ -1091,19 +1304,17 @@ function App() {
           }
 
           const rawText = await file.text()
+          const parsedTemplate = importTemplateFromText(file.name, rawText)
+          const located = await locateOfficialDataSource(parsedTemplate, workingSchema)
+          workingSchema = located.schema
           const importedTemplate = suggestImportedTemplateBindings(
-            importTemplateFromText(file.name, rawText),
-            trustedDataSourceSchema,
-            snapshot?.context.mainTableName,
-            activeTemplate,
-            DEFAULT_TEST_TEMPLATE,
+            parsedTemplate,
+            workingSchema,
+            located.match?.mainTableName,
           )
           parsedEntries.push({
             fileName: file.name,
-            template: {
-              ...importedTemplate,
-              status: 'draft',
-            },
+            template: importedTemplate,
           })
         } catch (error) {
           failedDetails.push({
@@ -1131,6 +1342,9 @@ function App() {
         return
       }
 
+      if (workingSchema && workingSchema !== trustedDataSourceSchema) {
+        setDataSourceSchema(workingSchema)
+      }
       const currentWorkspace = templateWorkspaceRef.current ?? templateWorkspace
       const plannedImport = appendImportedTemplates(
         currentWorkspace,
@@ -1159,15 +1373,28 @@ function App() {
           return {
             fileName: parsedEntries[index]?.fileName ?? template.sourceFile ?? template.name,
             status: 'success',
-            message: `已保存为草稿“${template.name}”。${pendingImageCount ? `有 ${pendingImageCount} 张固定图片需要手动上传。` : ''}`,
+            message:
+              template.status === 'ready'
+                ? `已导入并自动匹配“${template.name}”，可以直接使用。`
+                : `已保存为草稿“${template.name}”。${pendingImageCount ? `有 ${pendingImageCount} 张固定图片需要手动上传。` : '请检查数据源。'}`,
           }
         },
       )
       const successCount = successDetails.length
       const failedCount = failedDetails.length
+      const readyCount = plannedImport.importedTemplates.filter(
+        (template) => template.status === 'ready',
+      ).length
+      const draftCount = successCount - readyCount
+      const importedStateSummary = [
+        readyCount ? `${readyCount} 个可直接使用` : '',
+        draftCount ? `${draftCount} 个需继续设置` : '',
+      ]
+        .filter(Boolean)
+        .join('，')
       const nextMessage = failedCount
-        ? `已处理 ${files.length} 个模板：成功 ${successCount} 个，失败 ${failedCount} 个。成功项已保存为草稿。`
-        : `已导入 ${successCount} 个模板，全部保存为草稿。请逐个点“继续设置”检查数据源。`
+        ? `已处理 ${files.length} 个模板：成功 ${successCount} 个，失败 ${failedCount} 个；${importedStateSummary}。`
+        : `已导入 ${successCount} 个模板：${importedStateSummary}。`
       setTemplateImportNotice({
         tone: failedCount ? 'warning' : 'success',
         message: nextMessage,
@@ -1263,7 +1490,17 @@ function App() {
           onNewTemplate={handleNewTemplate}
           onSearchChange={setTemplateSearch}
           onUseTemplate={handleUseTemplate}
+          onBackupTemplates={handleBackupTemplates}
+          onRestoreBackup={(file) => void handleRestoreBackup(file)}
           search={templateSearch}
+          storageLabel={HOST_STORAGE_LABELS[hostStorageState]}
+          storageTone={
+            hostStorageState === 'error' || hostStorageState === 'unavailable'
+              ? 'warn'
+              : hostStorageState === 'saving' || hostStorageState === 'checking'
+                ? 'busy'
+                : 'ok'
+          }
           templates={templates}
         />
       ) : null}
@@ -1709,12 +1946,21 @@ function TemplateSidebar({
   onNewTemplate,
   onSearchChange,
   onUseTemplate,
+  onBackupTemplates,
+  onRestoreBackup,
   search,
+  storageLabel,
+  storageTone,
   templates,
 }: {
   activePanel: ActivePanel
   activeTemplateId: string
   isTemplateImporting: boolean
+  onBackupTemplates: () => void
+  onRestoreBackup: (file: File) => void
+  storageLabel: string
+  storageTone: 'ok' | 'busy' | 'warn'
+
   onCollapse: () => void
   onDeleteTemplate: (template: PrintTemplate, trigger: HTMLButtonElement) => void
   onImportTemplateFiles: (files: File[]) => void
@@ -1725,6 +1971,7 @@ function TemplateSidebar({
   templates: PrintTemplate[]
 }) {
   const sidebarUploadRef = useRef<HTMLInputElement>(null)
+  const restoreUploadRef = useRef<HTMLInputElement>(null)
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleTemplates = normalizedSearch
     ? templates.filter((template) =>
@@ -1860,6 +2107,34 @@ function TemplateSidebar({
         >
           + 新建空白模板
         </button>
+        <p className={`template-storage-status template-storage-${storageTone}`} role="status">
+          {storageLabel}
+        </p>
+        <div className="template-backup-actions">
+          <button className="template-backup-button" onClick={onBackupTemplates} type="button">
+            备份模板
+          </button>
+          <button
+            className="template-backup-button"
+            onClick={() => restoreUploadRef.current?.click()}
+            type="button"
+          >
+            从备份恢复
+          </button>
+          <input
+            accept=".json"
+            hidden
+            ref={restoreUploadRef}
+            type="file"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0]
+              if (file) {
+                onRestoreBackup(file)
+              }
+              event.currentTarget.value = ''
+            }}
+          />
+        </div>
       </div>
     </aside>
   )
@@ -4346,18 +4621,30 @@ function suggestImportedTemplateBindings(
   const originalMainTableName = template.mainTableName
   const originalItemTableName = template.itemTableName
   const originalLinkedItemsFieldName = template.linkedItemsFieldName
+  // Only bind a table that really owns the template's link field. Falling back to
+  // the active table or another template's table bound purchase templates to the
+  // PI table and left them stuck as drafts.
+  const requiredLinkFieldName = template.officialTemplate.dynamicRoots[0] ?? ''
+  const ownsLinkField = (tableName: string | undefined) => {
+    const table = tableName ? tableByName.get(tableName) : undefined
+    return Boolean(
+      table &&
+        (!requiredLinkFieldName ||
+          table.fields.some(
+            (field) =>
+              field.name === requiredLinkFieldName &&
+              Boolean(field.linkedTableId && tableById.has(field.linkedTableId)),
+          )),
+    )
+  }
   const mainTableName = originalMainTableName.trim()
     ? originalMainTableName
-    : firstAvailableTableName([
-        preferredMainTableName,
-        schema.activeTableName,
-        ...fallbackTemplates.map((candidate) => candidate.mainTableName),
-      ])
+    : firstAvailableTableName(
+        [preferredMainTableName, schema.activeTableName, ...fallbackTemplates.map((candidate) => candidate.mainTableName)]
+          .filter(ownsLinkField),
+      )
   const mainTable = tableByName.get(mainTableName.trim())
-  const linkedFieldCandidates = [
-    ...template.officialTemplate.dynamicRoots,
-    ...fallbackTemplates.map((candidate) => candidate.linkedItemsFieldName),
-  ]
+  const linkedFieldCandidates = [...template.officialTemplate.dynamicRoots]
   const inferredLinkedField = mainTable?.fields.find(
     (field) => linkedFieldCandidates.includes(field.name) && Boolean(
       field.linkedTableId && tableById.has(field.linkedTableId),
@@ -4619,6 +4906,15 @@ function getDataSourceLabel(source?: PiSnapshot['context']['source']): string {
 
   return '尚未读取'
 }
+
+const HOST_STORAGE_LABELS = {
+  checking: '正在读取飞书里保存的模板…',
+  ready: '模板保存在飞书（刷新、换电脑都在）',
+  saving: '正在保存到飞书…',
+  saved: '已保存到飞书',
+  error: '同步飞书失败，请先备份模板',
+  unavailable: '模板只保存在本机浏览器，建议定期备份',
+} as const
 
 function shouldUseDemoData(): boolean {
   if (import.meta.env.DEV) {

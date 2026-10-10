@@ -1,3 +1,4 @@
+import { isOriginalTemplateImageUrl } from './templateImages'
 import {
   ITEM_FIELD_LABELS,
   LINKED_ITEMS_FIELD_NAME,
@@ -237,7 +238,10 @@ export function getMissingStaticTemplateImageCount(template: PrintTemplate): num
           if (block.imageConfig || block.type === 9) {
             const designId = `image:p${pageIndex}-r${rowIndex}-c${columnIndex}-b${blockIndex}`
             const uploadedSource = template.designOverrides?.staticImages?.[designId]?.dataUrl
-            if (!isSafeEmbeddedImageSource(uploadedSource)) {
+            if (
+              !isSafeEmbeddedImageSource(uploadedSource) &&
+              !isOriginalTemplateImageUrl(block.imageConfig?.file?.url)
+            ) {
               missingCount += 1
             }
           }
@@ -699,8 +703,12 @@ function summarizeOfficialTemplate(exportName: string, content: DesignerContent)
   let attachmentFieldCount = 0
 
   walkObject(content, (node) => {
-    if (Array.isArray(node.name)) {
-      const path = normalizeFieldPath(node.name)
+    if (node.type === 'loop' && Array.isArray(node.rootPath) && typeof node.rootPath[0] === 'string') {
+      dynamicRoots.add(node.rootPath[0])
+    }
+
+    if (Array.isArray(node.name) || (node.type === 'variable' && typeof node.name === 'string')) {
+      const path = normalizeFieldPath(node.name as string[] | string)
       if (path) {
         fieldRefs.add(path)
       }

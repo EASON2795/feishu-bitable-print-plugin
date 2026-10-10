@@ -2334,3 +2334,39 @@
     transform: rotate(360deg);
   }
 }
+
+.template-storage-status {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #2f7d4f;
+}
+
+.template-storage-busy {
+  color: #6b7a8c;
+}
+
+.template-storage-warn {
+  color: #b54708;
+}
+
+.template-backup-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.template-backup-button {
+  flex: 1;
+  min-height: 30px;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  color: #425466;
+  background: #f8fafc;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.template-backup-button:hover {
+  background: #eef3f8;
+}
