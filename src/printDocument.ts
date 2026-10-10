@@ -208,10 +208,10 @@ function renderInvoicePage(document: PiPrintDocument, settings: TemplatePrintSet
           <tr>
             <th>${formatInline(text.itemHeaders.itemName)}</th>
             <th>${formatInline(text.itemHeaders.specification)}</th>
-            <th>${formatInline(text.itemHeaders.quantity)}</th>
-            <th>${formatInline(text.itemHeaders.unit)}</th>
-            <th>${formatInline(text.itemHeaders.unitPrice)}</th>
-            <th>${formatInline(text.itemHeaders.subtotal)}</th>
+            <th class="compact-header">${formatInline(text.itemHeaders.quantity)}</th>
+            <th class="compact-header">${formatInline(text.itemHeaders.unit)}</th>
+            <th class="compact-header">${formatInline(text.itemHeaders.unitPrice)}</th>
+            <th class="compact-header">${formatInline(text.itemHeaders.subtotal)}</th>
           </tr>
         </thead>
         <tbody>${itemRows}</tbody>
@@ -239,10 +239,10 @@ function renderItemRow(item: PiPrintDocument['items'][number]): string {
   return `<tr>
     <td>${formatMultiline(item.itemName)}</td>
     <td class="spec-cell">${formatMultiline(item.specification)}</td>
-    <td>${escapeHtml(item.quantity)}</td>
-    <td>${escapeHtml(item.unit)}</td>
-    <td>${escapeHtml(item.unitPrice)}</td>
-    <td>${escapeHtml(item.subtotal)}</td>
+    <td class="compact-value">${escapeHtml(item.quantity)}</td>
+    <td class="compact-value">${escapeHtml(item.unit)}</td>
+    <td class="compact-value">${escapeHtml(item.unitPrice)}</td>
+    <td class="compact-value">${escapeHtml(item.subtotal)}</td>
   </tr>`
 }
 
@@ -980,6 +980,28 @@ function buildInvoicePrintStyles(settings: TemplatePrintSettings): string {
     overflow-wrap: normal;
     word-break: normal;
     white-space: nowrap;
+  }
+
+  .items-table .compact-header {
+    padding-left: 0.2mm !important;
+    padding-right: 0.2mm !important;
+    font-size: 5.2pt !important;
+    line-height: 1.08 !important;
+    letter-spacing: -0.03em;
+    white-space: nowrap !important;
+    overflow-wrap: normal !important;
+    word-break: keep-all !important;
+  }
+
+  .items-table .compact-value {
+    padding-left: 0.25mm !important;
+    padding-right: 0.25mm !important;
+    font-size: 6.2pt !important;
+    line-height: 1.12 !important;
+    letter-spacing: -0.015em;
+    white-space: nowrap !important;
+    overflow-wrap: normal !important;
+    word-break: keep-all !important;
   }
 
   .spec-cell {
